@@ -1,8 +1,23 @@
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
 
+// --- Day 1 Gameplay Tuning Constants (Tuned for Fast, Responsive Zuma-like Pace) ---
 export const BALL_RADIUS = 20;
-export const BALL_DIAMETER = BALL_RADIUS * 2;
+export const BALL_SPACING = 40;
+export const BALL_DIAMETER = BALL_SPACING;
+
+export const CHAIN_SPEED = 85; // Pixels per second (lively, responsive progression)
+export const PROJECTILE_SPEED = 1250; // Pixels per second (crisp, snappy shooting)
+export const SHOOT_COOLDOWN = 180; // Milliseconds between shots (rapid responsiveness)
+
+export const MATCH_MIN = 3;
+export const INITIAL_BALL_COUNT = 25;
+export const INSERTION_SETTLE_MS = 120; // Milliseconds for smooth squeeze-in animation
+
+export const ENABLE_ROLLBACK_PHYSICS = true;
+
+export const SHOOTER_Y = 640;
+export const SHOOTER_X = 640;
 
 export enum BallColor {
   RED = 'RED',
@@ -46,7 +61,19 @@ export enum BallState {
   INSERTING = 'INSERTING',
 }
 
-export const DEFAULT_CHAIN_SPEED = 45; // Pixels per second along the path
-export const INITIAL_BALL_COUNT = 25;
-export const SHOOTER_Y = 640;
-export const SHOOTER_X = 640;
+/**
+ * Deliberately designed test level layout.
+ * Fixed deterministic sequence containing intentional pairs and sandwich patterns
+ * so the player can plan shots and test combo cascades predictably.
+ */
+export const FIXED_LEVEL_SEQUENCE: BallColor[] = [
+  BallColor.RED, BallColor.RED, BallColor.BLUE,
+  BallColor.GREEN, BallColor.GREEN, BallColor.YELLOW,
+  BallColor.YELLOW, BallColor.BLUE, BallColor.BLUE,
+  BallColor.RED, BallColor.GREEN, BallColor.BLUE,
+  BallColor.GREEN, BallColor.YELLOW, BallColor.YELLOW,
+  BallColor.BLUE, BallColor.BLUE, BallColor.RED,
+  BallColor.RED, BallColor.GREEN, BallColor.GREEN,
+  BallColor.YELLOW, BallColor.YELLOW, BallColor.RED,
+  BallColor.BLUE,
+];

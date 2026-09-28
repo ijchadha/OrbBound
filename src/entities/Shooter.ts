@@ -1,10 +1,11 @@
 import Phaser from 'phaser';
 import {
   BALL_COLOR_HEX,
-  BALL_COLOR_HIGHLIGHTS,
   BALL_COLORS,
   BALL_RADIUS,
   BallColor,
+  PROJECTILE_SPEED,
+  SHOOT_COOLDOWN,
   SHOOTER_X,
   SHOOTER_Y,
 } from '../utils/constants';
@@ -13,7 +14,7 @@ import { Projectile } from './Projectile';
 
 /**
  * Shooter represents the player's rotating launcher.
- * Visual container with aiming line, loaded orb, queued orb, and shooting recoil.
+ * Uses cached WebGL textures for instant, responsive rendering.
  */
 export class Shooter {
   private scene: Phaser.Scene;
@@ -21,15 +22,17 @@ export class Shooter {
   private turretContainer: Phaser.GameObjects.Container;
   private baseGraphics: Phaser.GameObjects.Graphics;
   private turretGraphics: Phaser.GameObjects.Graphics;
-  private loadedOrbGraphics: Phaser.GameObjects.Graphics;
-  private nextOrbGraphics: Phaser.GameObjects.Graphics;
+  private loadedOrbSprite: Phaser.GameObjects.Image;
+  private nextOrbSprite: Phaser.GameObjects.Image;
+  private nextOrbSlotGraphics: Phaser.GameObjects.Graphics;
   private aimLineGraphics: Phaser.GameObjects.Graphics;
 
   public currentColor: BallColor;
   public nextColor: BallColor;
   private currentAimAngle: number = -Math.PI / 2;
   private canShoot: boolean = true;
-  private shootCooldownMs: number = 220;
+  public shootCooldownMs: number = SHOOT_COOLDOWN;
+  public projectileSpeed: number = PROJECTILE_SPEED;
 
   constructor(scene: Phaser.Scene, x: number = SHOOTER_X, y: number = SHOOTER_Y) {
     this.scene = scene;
@@ -37,25 +40,35 @@ export class Shooter {
     this.nextColor = Phaser.Utils.Array.GetRandom(BALL_COLORS) as BallColor;
 
     this.container = this.scene.add.container(x, y);
+    this.container.setDepth(16);
+
     this.turretContainer = this.scene.add.container(0, 0);
 
     this.aimLineGraphics = this.scene.add.graphics();
+    this.aimLineGraphics.setDepth(14);
+
     this.baseGraphics = this.scene.add.graphics();
     this.turretGraphics = this.scene.add.graphics();
-    this.loadedOrbGraphics = this.scene.add.graphics();
-    this.nextOrbGraphics = this.scene.add.graphics();
+    this.nextOrbSlotGraphics = this.scene.add.graphics();
+
+    // Reusable cached orb sprites
+    this.loadedOrbSprite = this.scene.add.image(0, 0, `orb_${this.currentColor}`);
+    this.nextOrbSprite = this.scene.add.image(56, 24, `orb_${this.nextColor}`);
+    this.nextOrbSprite.setScale(0.65);
 
     // Assemble display hierarchy
     this.container.add(this.baseGraphics);
     this.container.add(this.turretContainer);
     this.turretContainer.add(this.turretGraphics);
-    this.turretContainer.add(this.loadedOrbGraphics);
-    this.container.add(this.nextOrbGraphics);
+    this.turretContainer.add(this.loadedOrbSprite);
+
+    this.container.add(this.nextOrbSlotGraphics);
+    this.container.add(this.nextOrbSprite);
 
     this.renderBase();
     this.renderTurret();
-    this.renderLoadedOrb();
-    this.renderNextOrb();
+    this.renderNextSlot();
+    this.renderAimLine();
   }
 
   /**
@@ -70,96 +83,53 @@ export class Shooter {
 
     // Outer stone pedestal
     this.baseGraphics.fillStyle(0x1e293b, 1);
-    this.baseGraphics.fillCircle(0, 0, 50);
+    this.baseGraphics.fillCircle(0, 0, 48);
 
-    // Metallic ring
-    this.baseGraphics.lineStyle(3, 0x475569, 1);
-    this.baseGraphics.strokeCircle(0, 0, 47);
+    // Golden runic bevel ring
+    this.baseGraphics.lineStyle(2, 0xd97706, 0.85);
+    this.baseGraphics.strokeCircle(0, 0, 46);
 
-    // Inner mechanical well
+    // Inner dark recessed well
     this.baseGraphics.fillStyle(0x0f172a, 1);
-    this.baseGraphics.fillCircle(0, 0, 36);
+    this.baseGraphics.fillCircle(0, 0, 40);
 
-    // Subtle alignment marks
-    this.baseGraphics.lineStyle(1.5, 0x64748b, 0.5);
-    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      this.baseGraphics.lineBetween(cos * 38, sin * 38, cos * 45, sin * 45);
-    }
+    this.baseGraphics.lineStyle(1.5, 0x334155, 0.6);
+    this.baseGraphics.strokeCircle(0, 0, 39);
   }
 
   /**
-   * Turret nozzle / barrel that rotates toward the mouse cursor.
+   * Stylized frog / gargoyle muzzle that rotates toward aim target.
    */
   private renderTurret(): void {
     this.turretGraphics.clear();
 
-    // Dual guide rails pointing forward along local +X axis
+    // Left cannon tooth / bracket
     this.turretGraphics.fillStyle(0x334155, 1);
-    this.turretGraphics.fillRect(6, -14, 34, 6);
-    this.turretGraphics.fillRect(6, 8, 34, 6);
+    this.turretGraphics.fillRoundedRect(-22, -34, 12, 48, 4);
 
-    // Aiming laser guide / arrow pointer
-    this.turretGraphics.fillStyle(0x38bdf8, 0.85);
-    this.turretGraphics.beginPath();
-    this.turretGraphics.moveTo(42, 0);
-    this.turretGraphics.lineTo(34, -5);
-    this.turretGraphics.lineTo(34, 5);
-    this.turretGraphics.closePath();
-    this.turretGraphics.fillPath();
+    // Right cannon tooth / bracket
+    this.turretGraphics.fillStyle(0x334155, 1);
+    this.turretGraphics.fillRoundedRect(10, -34, 12, 48, 4);
 
-    // Chamber cradle
-    this.turretGraphics.fillStyle(0x1e293b, 0.9);
-    this.turretGraphics.fillCircle(0, 0, BALL_RADIUS + 4);
-    this.turretGraphics.lineStyle(2, 0x64748b, 0.8);
-    this.turretGraphics.strokeCircle(0, 0, BALL_RADIUS + 4);
+    // Center chamber glow ring
+    this.turretGraphics.lineStyle(2, 0x38bdf8, 0.7);
+    this.turretGraphics.strokeCircle(0, 0, BALL_RADIUS + 3);
+
+    // Forward aiming guide notch
+    this.turretGraphics.fillStyle(0x38bdf8, 0.9);
+    this.turretGraphics.fillTriangle(0, -36, -4, -28, 4, -28);
   }
 
-  /**
-   * Loaded active orb resting in the chamber.
-   */
-  private renderLoadedOrb(): void {
-    this.loadedOrbGraphics.clear();
-    const colorHex = BALL_COLOR_HEX[this.currentColor];
-    const highlightHex = BALL_COLOR_HIGHLIGHTS[this.currentColor];
-    const r = BALL_RADIUS;
-
-    this.loadedOrbGraphics.fillStyle(colorHex, 1);
-    this.loadedOrbGraphics.fillCircle(0, 0, r);
-
-    // Gloss
-    this.loadedOrbGraphics.fillStyle(0xffffff, 0.7);
-    this.loadedOrbGraphics.fillEllipse(-r * 0.35, -r * 0.35, r * 0.45, r * 0.25);
-    this.loadedOrbGraphics.fillStyle(highlightHex, 0.4);
-    this.loadedOrbGraphics.fillCircle(-r * 0.2, -r * 0.2, r * 0.35);
-
-    // Rim highlight
-    this.loadedOrbGraphics.lineStyle(1.5, 0xffffff, 0.3);
-    this.loadedOrbGraphics.strokeCircle(0, 0, r);
-  }
-
-  /**
-   * Preview of the next queued orb, rendered in a secondary slot.
-   */
-  private renderNextOrb(): void {
-    this.nextOrbGraphics.clear();
-    const colorHex = BALL_COLOR_HEX[this.nextColor];
+  private renderNextSlot(): void {
+    this.nextOrbSlotGraphics.clear();
     const r = BALL_RADIUS * 0.65;
     const offsetX = 56;
     const offsetY = 24;
 
-    // Small slot background
-    this.nextOrbGraphics.fillStyle(0x0f172a, 0.9);
-    this.nextOrbGraphics.fillCircle(offsetX, offsetY, r + 4);
-    this.nextOrbGraphics.lineStyle(1.5, 0x475569, 0.8);
-    this.nextOrbGraphics.strokeCircle(offsetX, offsetY, r + 4);
-
-    // Next orb
-    this.nextOrbGraphics.fillStyle(colorHex, 0.9);
-    this.nextOrbGraphics.fillCircle(offsetX, offsetY, r);
-    this.nextOrbGraphics.fillStyle(0xffffff, 0.5);
-    this.nextOrbGraphics.fillEllipse(offsetX - r * 0.3, offsetY - r * 0.3, r * 0.4, r * 0.2);
+    this.nextOrbSlotGraphics.fillStyle(0x0f172a, 0.9);
+    this.nextOrbSlotGraphics.fillCircle(offsetX, offsetY, r + 4);
+    this.nextOrbSlotGraphics.lineStyle(1.5, 0x475569, 0.8);
+    this.nextOrbSlotGraphics.strokeCircle(offsetX, offsetY, r + 4);
   }
 
   /**
@@ -175,7 +145,6 @@ export class Shooter {
     this.currentAimAngle = angle;
     this.turretContainer.setRotation(angle);
 
-    // Update dotted laser trajectory line
     this.renderAimLine();
   }
 
@@ -191,8 +160,7 @@ export class Shooter {
     const cos = Math.cos(this.currentAimAngle);
     const sin = Math.sin(this.currentAimAngle);
 
-    // Dotted ray
-    const dotSpacing = 22;
+    const dotSpacing = 24;
     for (let d = startDistance; d < maxLineDist; d += dotSpacing) {
       const px = this.container.x + cos * d;
       const py = this.container.y + sin * d;
@@ -224,7 +192,7 @@ export class Shooter {
       targets: this.turretContainer,
       x: -Math.cos(this.currentAimAngle) * 8,
       y: -Math.sin(this.currentAimAngle) * 8,
-      duration: 60,
+      duration: 50,
       yoyo: true,
       ease: 'Quad.easeOut',
       onComplete: () => {
@@ -236,8 +204,8 @@ export class Shooter {
     this.currentColor = this.nextColor;
     this.nextColor = Phaser.Utils.Array.GetRandom(BALL_COLORS) as BallColor;
 
-    this.renderLoadedOrb();
-    this.renderNextOrb();
+    this.loadedOrbSprite.setTexture(`orb_${this.currentColor}`);
+    this.nextOrbSprite.setTexture(`orb_${this.nextColor}`);
     this.renderAimLine();
 
     AudioSynth.playShoot();
@@ -248,7 +216,7 @@ export class Shooter {
       spawnY,
       this.currentAimAngle,
       firedColor,
-      1050
+      this.projectileSpeed
     );
   }
 
@@ -260,8 +228,8 @@ export class Shooter {
     this.currentColor = this.nextColor;
     this.nextColor = temp;
 
-    this.renderLoadedOrb();
-    this.renderNextOrb();
+    this.loadedOrbSprite.setTexture(`orb_${this.currentColor}`);
+    this.nextOrbSprite.setTexture(`orb_${this.nextColor}`);
     this.renderAimLine();
 
     AudioSynth.playSwap();

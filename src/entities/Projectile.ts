@@ -1,7 +1,5 @@
 import Phaser from 'phaser';
 import {
-  BALL_COLOR_HEX,
-  BALL_COLOR_HIGHLIGHTS,
   BALL_RADIUS,
   BallColor,
   GAME_HEIGHT,
@@ -9,7 +7,8 @@ import {
 } from '../utils/constants';
 
 /**
- * Projectile represents a ball fired by the Shooter traveling across the screen.
+ * Projectile represents a crystal marble fired by the Shooter traveling across the screen.
+ * Uses cached WebGL sprite textures for high-speed 60 FPS performance.
  */
 export class Projectile {
   public x: number;
@@ -20,9 +19,7 @@ export class Projectile {
   public readonly radius: number;
   public isAlive: boolean = true;
 
-  private scene: Phaser.Scene;
-  private container: Phaser.GameObjects.Container;
-  private graphics: Phaser.GameObjects.Graphics;
+  private sprite: Phaser.GameObjects.Image;
 
   constructor(
     scene: Phaser.Scene,
@@ -30,10 +27,9 @@ export class Projectile {
     startY: number,
     angle: number,
     color: BallColor,
-    speed: number = 1000,
+    speed: number = 1200,
     radius: number = BALL_RADIUS
   ) {
-    this.scene = scene;
     this.x = startX;
     this.y = startY;
     this.color = color;
@@ -42,36 +38,9 @@ export class Projectile {
     this.vx = Math.cos(angle) * speed;
     this.vy = Math.sin(angle) * speed;
 
-    this.container = this.scene.add.container(this.x, this.y);
-    this.graphics = this.scene.add.graphics();
-    this.container.add(this.graphics);
-
-    this.render();
-  }
-
-  private render(): void {
-    this.graphics.clear();
-    const mainColor = BALL_COLOR_HEX[this.color];
-    const highlightColor = BALL_COLOR_HIGHLIGHTS[this.color];
-    const r = this.radius;
-
-    // Glowing motion halo
-    this.graphics.fillStyle(mainColor, 0.4);
-    this.graphics.fillCircle(0, 0, r + 4);
-
-    // Main orb
-    this.graphics.fillStyle(mainColor, 1);
-    this.graphics.fillCircle(0, 0, r);
-
-    // Specular highlight
-    this.graphics.fillStyle(0xffffff, 0.8);
-    this.graphics.fillEllipse(-r * 0.35, -r * 0.35, r * 0.45, r * 0.25);
-    this.graphics.fillStyle(highlightColor, 0.5);
-    this.graphics.fillCircle(-r * 0.2, -r * 0.2, r * 0.35);
-
-    // Outer ring
-    this.graphics.lineStyle(1.5, 0xffffff, 0.4);
-    this.graphics.strokeCircle(0, 0, r);
+    this.sprite = scene.add.image(this.x, this.y, `orb_${color}`);
+    this.sprite.setOrigin(0.5, 0.5);
+    this.sprite.setDepth(18);
   }
 
   public update(delta: number): boolean {
@@ -81,9 +50,9 @@ export class Projectile {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
 
-    this.container.setPosition(this.x, this.y);
+    this.sprite.setPosition(this.x, this.y);
 
-    // Check canvas boundaries
+    // Boundary check
     if (
       this.x < -60 ||
       this.x > GAME_WIDTH + 60 ||
@@ -99,6 +68,6 @@ export class Projectile {
 
   public destroy(): void {
     this.isAlive = false;
-    this.container.destroy();
+    this.sprite.destroy();
   }
 }

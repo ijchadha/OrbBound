@@ -2,11 +2,13 @@ import Phaser from 'phaser';
 import {
   BALL_COLOR_HEX,
   BALL_COLORS,
-  BALL_DIAMETER,
   BALL_RADIUS,
+  BALL_SPACING,
   BallColor,
-  DEFAULT_CHAIN_SPEED,
+  CHAIN_SPEED,
+  FIXED_LEVEL_SEQUENCE,
   INITIAL_BALL_COUNT,
+  MATCH_MIN,
 } from '../utils/constants';
 import { AudioSynth } from '../utils/AudioSynth';
 import { PathSampler } from '../utils/PathSampler';
@@ -15,7 +17,7 @@ import { Ball } from './Ball';
 
 export interface ChainEvents {
   onReachedEnd?: () => void;
-  onMatch?: (color: string, count: number, x: number, y: number) => void;
+  onMatch?: (color: string, count: number, x: number, y: number, comboMultiplier: number) => void;
   onCrash?: (x: number, y: number, comboReaction: boolean) => void;
   onWaveCleared?: () => void;
 }
@@ -29,22 +31,29 @@ interface ChainSegment {
  * BallChain acts as the authority and manager for all orbs along the path.
  *
  * Implements:
- * 1. Zuma Rollback: When matches break the chain, the entire front half halts
- *    forward motion, accelerates backwards toward the rear chain, and crashes
+ * 1. Zuma Chain Rollback / Fallback: When matches break the chain, the entire front half
+ *    halts forward motion, accelerates backwards toward the rear chain, and crashes
  *    into it with physical momentum pushback and combo chain reactions.
- * 2. Insertion Surge: Adding to the chain pushes the entire front half 1 orb
- *    forward toward the vortex. If no match occurs, the forward push remains.
+ * 2. Magnetic Attraction Lightning: Electric energy arcs bridge open gaps while rolling back.
+ * 3. Insertion Surge: Adding to the chain pushes the entire front half 1 orb forward (+40px)
+ *    toward the vortex. If no match occurs, the forward push remains.
+ * 4. Proper full-scale orb insertion: Squeeze animation starts at 0.75 and settles cleanly at 1.0.
  */
 export class BallChain {
   private scene: Phaser.Scene;
   private pathSampler: PathSampler;
   private balls: Ball[] = [];
-  private speed: number = DEFAULT_CHAIN_SPEED;
+  private speed: number = CHAIN_SPEED;
   private isAtEnd: boolean = false;
   private events: ChainEvents;
 
-  // Graphics for magnetic attraction arcs between broken segments
+  // Graphics for magnetic electric energy arcs between broken segments
   private magneticFxGraphics: Phaser.GameObjects.Graphics;
+
+  // Current cascade multiplier for chain reactions
+  private currentCascadeMultiplier: number = 1;
+
+  public enableRollbackPhysics: boolean = true;
 
   constructor(scene: Phaser.Scene, pathSampler: PathSampler, events: ChainEvents = {}) {
     this.scene = scene;
@@ -52,36 +61,49 @@ export class BallChain {
     this.events = events;
 
     this.magneticFxGraphics = this.scene.add.graphics();
-    this.spawnInitialChain(INITIAL_BALL_COUNT);
+    this.magneticFxGraphics.setDepth(20);
+
+    this.spawnInitialChain(FIXED_LEVEL_SEQUENCE);
   }
 
   /**
-   * Spawns initial chain with evenly spaced balls of random colors.
+   * Spawns initial chain with evenly spaced balls.
    */
-  public spawnInitialChain(count: number): void {
+  public spawnInitialChain(source: BallColor[] | number = FIXED_LEVEL_SEQUENCE): void {
     this.destroy();
     this.isAtEnd = false;
+    this.currentCascadeMultiplier = 1;
 
-    const startingHeadDistance = count * BALL_DIAMETER + 100;
-    let previousColor: BallColor | null = null;
-    let repeatCount = 0;
+    let colors: BallColor[] = [];
+    if (Array.isArray(source)) {
+      colors = [...source];
+    } else {
+      const count = source || INITIAL_BALL_COUNT;
+      let prev: BallColor | null = null;
+      let repeat = 0;
+      for (let i = 0; i < count; i++) {
+        let col = Phaser.Utils.Array.GetRandom(BALL_COLORS) as BallColor;
+        if (col === prev) {
+          repeat++;
+          if (repeat >= 2) {
+            const others = BALL_COLORS.filter((c) => c !== prev);
+            col = Phaser.Utils.Array.GetRandom(others);
+            repeat = 0;
+          }
+        } else {
+          repeat = 0;
+        }
+        prev = col;
+        colors.push(col);
+      }
+    }
+
+    const count = colors.length;
+    const startingHeadDistance = count * BALL_SPACING + 100;
 
     for (let i = 0; i < count; i++) {
-      let color = Phaser.Utils.Array.GetRandom(BALL_COLORS) as BallColor;
-      if (color === previousColor) {
-        repeatCount++;
-        if (repeatCount >= 2) {
-          const alternateColors = BALL_COLORS.filter((c) => c !== previousColor);
-          color = Phaser.Utils.Array.GetRandom(alternateColors);
-          repeatCount = 0;
-        }
-      } else {
-        repeatCount = 0;
-      }
-      previousColor = color;
-
-      const distance = startingHeadDistance - i * BALL_DIAMETER;
-      const ball = new Ball(this.scene, color, distance, BALL_RADIUS);
+      const distance = startingHeadDistance - i * BALL_SPACING;
+      const ball = new Ball(this.scene, colors[i], distance, BALL_RADIUS);
       this.balls.push(ball);
     }
 
@@ -89,8 +111,8 @@ export class BallChain {
   }
 
   /**
-   * Primary update loop.
-   * Handles segment division, Zuma rollback for front segments, magnetic attraction,
+   * Primary frame update loop.
+   * Handles segment division, Zuma rollback for front segments, magnetic attraction arcs,
    * crash impacts, and standard forward advance.
    */
   public update(time: number, delta: number): void {
@@ -105,23 +127,36 @@ export class BallChain {
     // 1. Identify contiguous chain segments separated by gaps
     const segments = this.identifySegments();
 
-    if (segments.length === 1) {
-      // Continuous chain: normal forward advance
+    if (segments.length === 1 || !this.enableRollbackPhysics) {
+      // Single continuous chain: normal forward advance
       this.balls[0].distanceAlongPath += this.speed * dt;
       for (let i = 1; i < this.balls.length; i++) {
-        this.balls[i].distanceAlongPath = this.balls[i - 1].distanceAlongPath - BALL_DIAMETER;
+        const prev = this.balls[i - 1];
+        const curr = this.balls[i];
+        const targetDist = prev.distanceAlongPath - BALL_SPACING;
+
+        if (curr.distanceAlongPath < targetDist - 0.5) {
+          // Collapse gap smoothly
+          curr.distanceAlongPath += Math.max(620, this.speed * 5) * dt;
+          if (curr.distanceAlongPath >= targetDist - 0.5) {
+            curr.distanceAlongPath = targetDist;
+            this.checkAndResolveMatches();
+          }
+        } else {
+          curr.distanceAlongPath = targetDist;
+        }
       }
     } else {
       // Multiple segments (Chain is broken!)
-      // The rear-most segment (closest to spawner) crawls forward slowly
+      // The rear-most segment advances steadily
       const rearSeg = segments[segments.length - 1];
-      const rearStep = this.speed * 0.5 * dt;
+      const rearStep = this.speed * 0.75 * dt;
       this.balls[rearSeg.startIndex].distanceAlongPath += rearStep;
       for (let i = rearSeg.startIndex + 1; i <= rearSeg.endIndex; i++) {
-        this.balls[i].distanceAlongPath = this.balls[i - 1].distanceAlongPath - BALL_DIAMETER;
+        this.balls[i].distanceAlongPath = this.balls[i - 1].distanceAlongPath - BALL_SPACING;
       }
 
-      // Process gaps from back to front: Each front segment rolls BACKWARDS into the rear
+      // Process gaps from back to front: Each front segment ROLLS BACKWARDS into the rear!
       for (let s = segments.length - 2; s >= 0; s--) {
         const frontSeg = segments[s];
         const nextSeg = segments[s + 1];
@@ -129,12 +164,12 @@ export class BallChain {
         const frontTailBall = this.balls[frontSeg.endIndex];
         const rearHeadBall = this.balls[nextSeg.startIndex];
 
-        const currentGap = frontTailBall.distanceAlongPath - rearHeadBall.distanceAlongPath - BALL_DIAMETER;
+        const currentGap = frontTailBall.distanceAlongPath - rearHeadBall.distanceAlongPath - BALL_SPACING;
 
         if (currentGap > 0.5) {
-          // Gaps exist: FRONT HALF ROLLS BACKWARDS!
+          // Gap exists: FRONT HALF ROLLS BACKWARDS!
           const colorsMatch = frontTailBall.color === rearHeadBall.color;
-          const rollbackSpeed = colorsMatch ? 620 : 500;
+          const rollbackSpeed = colorsMatch ? 750 : 600;
           const rollbackStep = rollbackSpeed * dt;
 
           AudioSynth.playRollbackTick();
@@ -143,7 +178,7 @@ export class BallChain {
           if (rollbackStep >= currentGap) {
             // CRASH! Front half slams into the rear chain!
             this.handleSegmentCrash(frontSeg, nextSeg, frontTailBall, rearHeadBall);
-            break; // Segment layout has mutated; resume on next frame
+            break;
           } else {
             // Apply rollback to all balls in the front segment
             for (let k = frontSeg.startIndex; k <= frontSeg.endIndex; k++) {
@@ -159,7 +194,7 @@ export class BallChain {
   }
 
   /**
-   * Identifies contiguous segments of balls separated by gaps greater than BALL_DIAMETER.
+   * Identifies contiguous segments of balls separated by gaps greater than BALL_SPACING.
    */
   private identifySegments(): ChainSegment[] {
     const segments: ChainSegment[] = [];
@@ -167,7 +202,7 @@ export class BallChain {
 
     let segStart = 0;
     for (let i = 1; i < this.balls.length; i++) {
-      const gap = this.balls[i - 1].distanceAlongPath - this.balls[i].distanceAlongPath - BALL_DIAMETER;
+      const gap = this.balls[i - 1].distanceAlongPath - this.balls[i].distanceAlongPath - BALL_SPACING;
       if (gap > 1.0) {
         segments.push({ startIndex: segStart, endIndex: i - 1 });
         segStart = i;
@@ -179,22 +214,22 @@ export class BallChain {
 
   /**
    * Executed when the front half crashes back into the rear half.
-   * Transfers momentum backward (pushes the chain back) and checks for combo matches.
+   * Shunts the chain backward (-24px) away from the vortex and checks for combo matches.
    */
   private handleSegmentCrash(
     frontSeg: ChainSegment,
-    nextSeg: ChainSegment,
+    _nextSeg: ChainSegment,
     frontTailBall: Ball,
     rearHeadBall: Ball
   ): void {
     // 1. Weld the gap shut
-    frontTailBall.distanceAlongPath = rearHeadBall.distanceAlongPath + BALL_DIAMETER;
+    frontTailBall.distanceAlongPath = rearHeadBall.distanceAlongPath + BALL_SPACING;
     for (let k = frontSeg.endIndex - 1; k >= frontSeg.startIndex; k--) {
-      this.balls[k].distanceAlongPath = this.balls[k + 1].distanceAlongPath + BALL_DIAMETER;
+      this.balls[k].distanceAlongPath = this.balls[k + 1].distanceAlongPath + BALL_SPACING;
     }
 
     // 2. Momentum Pushback: The entire chain is shoved backward by the impact
-    const PUSHBACK_IMPULSE = 24; // 24 pixels backward along the path
+    const PUSHBACK_IMPULSE = 24; // 24 pixels backward along the path away from the vortex
     for (const ball of this.balls) {
       ball.distanceAlongPath = Math.max(0, ball.distanceAlongPath - PUSHBACK_IMPULSE);
     }
@@ -214,7 +249,8 @@ export class BallChain {
 
     this.updatePositions();
 
-    // 4. Chain Reaction Check: Now that the crash connected the colors, check for match!
+    // 4. Chain Reaction Check: Increase cascade multiplier and check matches across junction!
+    this.currentCascadeMultiplier += 1;
     this.scene.time.delayedCall(30, () => {
       this.checkAndResolveMatches();
     });
@@ -229,12 +265,14 @@ export class BallChain {
     const colorHex = colorsMatch ? BALL_COLOR_HEX[ballA.color] : 0x38bdf8;
     this.magneticFxGraphics.lineStyle(colorsMatch ? 3 : 1.5, colorHex, 0.85);
 
-    // Jagged electric arc between the two balls
     const segments = 6;
     const dx = ballB.x - ballA.x;
     const dy = ballB.y - ballA.y;
-    const perpX = -dy / Math.hypot(dx, dy);
-    const perpY = dx / Math.hypot(dx, dy);
+    const len = Math.hypot(dx, dy);
+    if (len === 0) return;
+
+    const perpX = -dy / len;
+    const perpY = dx / len;
 
     this.magneticFxGraphics.beginPath();
     this.magneticFxGraphics.moveTo(ballA.x, ballA.y);
@@ -250,8 +288,7 @@ export class BallChain {
     this.magneticFxGraphics.lineTo(ballB.x, ballB.y);
     this.magneticFxGraphics.strokePath();
 
-    // Energy suction glow circles
-    this.magneticFxGraphics.fillStyle(colorHex, 0.5);
+    this.magneticFxGraphics.fillStyle(colorHex, 0.4);
     this.magneticFxGraphics.fillCircle(ballA.x, ballA.y, BALL_RADIUS * 0.7);
     this.magneticFxGraphics.fillCircle(ballB.x, ballB.y, BALL_RADIUS * 0.7);
   }
@@ -263,6 +300,7 @@ export class BallChain {
     const shockwave = this.scene.add.graphics();
     shockwave.lineStyle(4, 0xffffff, 1);
     shockwave.strokeCircle(x, y, 10);
+    shockwave.setDepth(25);
 
     this.scene.tweens.add({
       targets: shockwave,
@@ -274,11 +312,11 @@ export class BallChain {
       onComplete: () => shockwave.destroy(),
     });
 
-    // Impact sparks
     const sparkColors = [BALL_COLOR_HEX[colorA], BALL_COLOR_HEX[colorB], 0xffffff];
     const sparkCount = 14;
     for (let i = 0; i < sparkCount; i++) {
       const spark = this.scene.add.graphics();
+      spark.setDepth(25);
       const col = Phaser.Utils.Array.GetRandom(sparkColors);
       spark.fillStyle(col, 1);
       spark.fillCircle(0, 0, Phaser.Math.Between(2, 4));
@@ -302,17 +340,18 @@ export class BallChain {
 
   /**
    * Inserts an orb into the chain:
-   * PUSHES THE ENTIRE FRONT HALF ONE ORB FORWARD (40px) TOWARD THE VORTEX!
-   * If there is no chain reaction, the forward push remains.
-   * If there is a chain reaction, the broken front half rolls back and crashes.
+   * 1. PUSHES THE ENTIRE FRONT HALF ONE ORB FORWARD (+40px) TOWARD THE VORTEX!
+   *    If there is no chain reaction, this forward surge remains permanent.
+   * 2. Renders the newly inserted orb at full proper size with a smooth squeeze-in animation.
+   * 3. Checks for match; if match pops, triggers chain rollback!
    */
   public insertBallAt(color: BallColor, insertIndex: number): void {
     const clampedIndex = Phaser.Math.Clamp(insertIndex, 0, this.balls.length);
+    this.currentCascadeMultiplier = 1;
 
-    // 1. PUSH THE ENTIRE FRONT HALF ONE ORB FORWARD
-    // All balls from index 0 to clampedIndex - 1 advance by BALL_DIAMETER
+    // 1. PUSH THE ENTIRE FRONT HALF ONE ORB FORWARD (+BALL_SPACING)
     for (let k = 0; k < clampedIndex; k++) {
-      this.balls[k].distanceAlongPath += BALL_DIAMETER;
+      this.balls[k].distanceAlongPath += BALL_SPACING;
     }
 
     // 2. Determine distance for the inserted orb
@@ -320,25 +359,22 @@ export class BallChain {
     if (this.balls.length === 0) {
       newDistance = 120;
     } else if (clampedIndex === 0) {
-      // Inserted at the very front (head)
-      newDistance = this.balls[0].distanceAlongPath + BALL_DIAMETER;
+      newDistance = this.balls[0].distanceAlongPath + BALL_SPACING;
     } else {
-      // Sits immediately behind the newly shifted front half
-      newDistance = this.balls[clampedIndex - 1].distanceAlongPath - BALL_DIAMETER;
+      newDistance = this.balls[clampedIndex - 1].distanceAlongPath - BALL_SPACING;
     }
 
-    // Trailing balls (clampedIndex onwards) keep their current distances (not pushed back!)
     const newBall = new Ball(this.scene, color, newDistance, BALL_RADIUS);
     this.balls.splice(clampedIndex, 0, newBall);
 
-    // 3. Audio & Visual Forward Surge on the front half
+    // Audio & Visual Forward Surge on front half
     AudioSynth.playSurge();
-    for (let k = 0; k <= clampedIndex; k++) {
+    for (let k = 0; k < clampedIndex; k++) {
       const b = this.balls[k];
       this.scene.tweens.add({
-        targets: b,
-        scaleX: 1.18,
-        scaleY: 1.18,
+        targets: b.getSprite(),
+        scaleX: 1.15,
+        scaleY: 1.15,
         duration: 70,
         yoyo: true,
         ease: 'Quad.easeOut',
@@ -347,16 +383,16 @@ export class BallChain {
 
     this.updatePositions();
 
-    // 4. Check for chain reaction
-    this.scene.time.delayedCall(40, () => {
+    // 3. Squeeze animation on the newly inserted ball (smoothly settles to scale 1.0)
+    newBall.animateSqueezeIn(120, () => {
       this.checkAndResolveMatches();
     });
   }
 
   /**
-   * Translates 1D distance along path into 2D screen coordinates.
+   * Translates 1D distanceAlongPath into 2D world coordinates via PathSampler.
    */
-  private updatePositions(): void {
+  public updatePositions(): void {
     const totalLength = this.pathSampler.totalLength;
 
     for (const ball of this.balls) {
@@ -374,15 +410,14 @@ export class BallChain {
 
   /**
    * Scans for 3+ identical adjacent colors and removes them.
-   * Removing balls breaks the chain, causing the front half to crash back!
+   * Removing balls breaks the chain, causing the front half to crash back in rollback!
    */
   public checkAndResolveMatches(): boolean {
-    if (this.balls.length < 3) return false;
+    if (this.balls.length < MATCH_MIN) return false;
 
-    const matches = MatchSystem.findMatches(this.balls, 3);
+    const matches = MatchSystem.findMatches(this.balls, MATCH_MIN);
     if (matches.length === 0) return false;
 
-    // Process from back to front to preserve valid array indices
     matches.sort((a, b) => b.startIndex - a.startIndex);
 
     for (const m of matches) {
@@ -397,14 +432,15 @@ export class BallChain {
         b.destroy();
       }
 
+      AudioSynth.playMatch(this.currentCascadeMultiplier);
+
       if (this.events.onMatch) {
-        this.events.onMatch(m.color, m.count, popX, popY);
+        this.events.onMatch(m.color, m.count, popX, popY, this.currentCascadeMultiplier);
       }
     }
 
     this.updatePositions();
 
-    // If whole board cleared, trigger wave clear
     if (this.balls.length === 0 && this.events.onWaveCleared) {
       this.events.onWaveCleared();
     }
@@ -413,13 +449,16 @@ export class BallChain {
   }
 
   /**
-   * Visual sparkle/burst when orbs pop.
+   * Visual particle burst when orbs pop.
    */
   private spawnPopParticles(x: number, y: number, color: BallColor): void {
     const count = 12;
+    const colorHex = BALL_COLOR_HEX[color];
+
     for (let i = 0; i < count; i++) {
       const p = this.scene.add.graphics();
-      p.fillStyle(BALL_COLOR_HEX[color], 1);
+      p.setDepth(30);
+      p.fillStyle(colorHex, 1);
       p.fillCircle(0, 0, Phaser.Math.Between(2, 5));
       p.setPosition(x, y);
 
@@ -432,13 +471,16 @@ export class BallChain {
         y: y + Math.sin(angle) * dist,
         alpha: 0,
         scale: 0.2,
-        duration: Phaser.Math.Between(300, 480),
+        duration: Phaser.Math.Between(280, 420),
         ease: 'Quad.easeOut',
         onComplete: () => p.destroy(),
       });
     }
   }
 
+  /**
+   * Checks if leading ball has crossed into the endpoint vortex.
+   */
   private checkEndpoint(): void {
     if (this.balls.length === 0) return;
 
@@ -460,7 +502,7 @@ export class BallChain {
   }
 
   public setSpeed(speed: number): void {
-    this.speed = speed;
+    this.speed = Math.max(10, speed);
   }
 
   public getHeadDistance(): number {

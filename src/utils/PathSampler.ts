@@ -108,13 +108,14 @@ export class PathSampler {
   }
 
   /**
-   * Renders the track onto a Graphics object with a stylized recessed groove.
+   * Renders the track onto a Graphics object with a rich carved stone groove,
+   * depth shading, glowing arcane conduit line, and periodic crosswise stone ties.
    */
   public drawTrack(graphics: Phaser.GameObjects.Graphics): void {
     if (this.samples.length < 2) return;
 
-    // Outer recessed trench / shadow
-    graphics.lineStyle(46, 0x050811, 0.85);
+    // 1. Wide ambient excavation drop shadow carved into the temple floor
+    graphics.lineStyle(56, 0x020408, 0.9);
     graphics.beginPath();
     graphics.moveTo(this.samples[0].x, this.samples[0].y);
     for (let i = 1; i < this.samples.length; i++) {
@@ -122,8 +123,8 @@ export class PathSampler {
     }
     graphics.strokePath();
 
-    // Trench bevel borders
-    graphics.lineStyle(42, 0x1e293b, 0.95);
+    // 2. Chiseled stone lip curb / trench bevel
+    graphics.lineStyle(50, 0x1e293b, 0.98);
     graphics.beginPath();
     graphics.moveTo(this.samples[0].x, this.samples[0].y);
     for (let i = 1; i < this.samples.length; i++) {
@@ -131,8 +132,8 @@ export class PathSampler {
     }
     graphics.strokePath();
 
-    // Inner railbed
-    graphics.lineStyle(36, 0x0f172a, 1);
+    // 3. Inner shadow walls of the sunken trench
+    graphics.lineStyle(44, 0x0a0f1d, 1);
     graphics.beginPath();
     graphics.moveTo(this.samples[0].x, this.samples[0].y);
     for (let i = 1; i < this.samples.length; i++) {
@@ -140,8 +141,55 @@ export class PathSampler {
     }
     graphics.strokePath();
 
-    // Center guiding rail line
-    graphics.lineStyle(2, 0x334155, 0.6);
+    // 4. Smooth polished obsidian channel floor
+    graphics.lineStyle(38, 0x070b14, 1);
+    graphics.beginPath();
+    graphics.moveTo(this.samples[0].x, this.samples[0].y);
+    for (let i = 1; i < this.samples.length; i++) {
+      graphics.lineTo(this.samples[i].x, this.samples[i].y);
+    }
+    graphics.strokePath();
+
+    // 5. Periodic crosswise carved stone sleepers / notches along the track
+    const tieSpacing = 28;
+    for (let d = 16; d < this.totalLength - 16; d += tieSpacing) {
+      const pt = this.getPointAtDistance(d);
+      const perpX = -Math.sin(pt.angle);
+      const perpY = Math.cos(pt.angle);
+
+      // Dark carved notch
+      graphics.lineStyle(2, 0x020408, 0.7);
+      graphics.lineBetween(
+        pt.x - perpX * 16, pt.y - perpY * 16,
+        pt.x + perpX * 16, pt.y + perpY * 16
+      );
+
+      // Gold highlight edge on the notch
+      graphics.lineStyle(1, 0x475569, 0.4);
+      graphics.lineBetween(
+        pt.x - perpX * 14, pt.y - perpY * 14,
+        pt.x + perpX * 14, pt.y + perpY * 14
+      );
+    }
+
+    // 6. Glowing arcane energy conduit channel down the center
+    graphics.lineStyle(6, 0x0284c7, 0.25);
+    graphics.beginPath();
+    graphics.moveTo(this.samples[0].x, this.samples[0].y);
+    for (let i = 1; i < this.samples.length; i++) {
+      graphics.lineTo(this.samples[i].x, this.samples[i].y);
+    }
+    graphics.strokePath();
+
+    graphics.lineStyle(2.5, 0x38bdf8, 0.75);
+    graphics.beginPath();
+    graphics.moveTo(this.samples[0].x, this.samples[0].y);
+    for (let i = 1; i < this.samples.length; i++) {
+      graphics.lineTo(this.samples[i].x, this.samples[i].y);
+    }
+    graphics.strokePath();
+
+    graphics.lineStyle(1, 0xffffff, 0.6);
     graphics.beginPath();
     graphics.moveTo(this.samples[0].x, this.samples[0].y);
     for (let i = 1; i < this.samples.length; i++) {

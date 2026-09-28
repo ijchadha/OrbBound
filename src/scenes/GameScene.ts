@@ -5,8 +5,19 @@ import { Shooter } from '../entities/Shooter';
 import { CollisionSystem } from '../systems/CollisionSystem';
 import { ScoreSystem } from '../systems/ScoreSystem';
 import { AudioSynth } from '../utils/AudioSynth';
-import { GAME_HEIGHT, GAME_WIDTH } from '../utils/constants';
+import {
+  BALL_RADIUS,
+  BallColor,
+  CHAIN_SPEED,
+  ENABLE_ROLLBACK_PHYSICS,
+  FIXED_LEVEL_SEQUENCE,
+  GAME_HEIGHT,
+  GAME_WIDTH,
+  PROJECTILE_SPEED,
+  SHOOT_COOLDOWN,
+} from '../utils/constants';
 import { PathSampler } from '../utils/PathSampler';
+import { TextureFactory } from '../utils/TextureFactory';
 
 export class GameScene extends Phaser.Scene {
   private pathSampler!: PathSampler;
@@ -18,6 +29,7 @@ export class GameScene extends Phaser.Scene {
   // State flags
   private isPaused: boolean = false;
   private isGameEnded: boolean = false;
+  private isDebugOpen: boolean = false;
 
   // Graphics and HUD elements
   private backgroundGraphics!: Phaser.GameObjects.Graphics;
@@ -26,7 +38,14 @@ export class GameScene extends Phaser.Scene {
   private scoreText!: Phaser.GameObjects.Text;
   private levelText!: Phaser.GameObjects.Text;
   private comboText!: Phaser.GameObjects.Text;
+  private fpsText!: Phaser.GameObjects.Text;
+  private lastFpsUpdate: number = 0;
   private pauseBtnText!: Phaser.GameObjects.Text;
+
+  // Debug Panel elements
+  private debugContainer?: Phaser.GameObjects.Container;
+  private debugSpeedLabel?: Phaser.GameObjects.Text;
+  private debugProjSpeedLabel?: Phaser.GameObjects.Text;
 
   // Modals & Overlays
   private pauseModal?: Phaser.GameObjects.Container;
@@ -43,26 +62,33 @@ export class GameScene extends Phaser.Scene {
     this.projectiles = [];
     this.isPaused = false;
     this.isGameEnded = false;
+    this.isDebugOpen = false;
 
     // Prevent default browser right-click context menu so secondary swap works
     if (this.game.canvas) {
       this.game.canvas.oncontextmenu = (e) => e.preventDefault();
     }
 
+    // Pre-bake high-performance WebGL textures for all crystal marble colors
+    TextureFactory.ensureTextures(this);
+
     this.renderBackground();
     this.buildTrack();
     this.renderEndpointMarker();
     this.setupHUD();
 
-    // Initialize ball chain with match & clearance callbacks
+    // Initialize ball chain with deterministic matching and cascade callbacks
     this.ballChain = new BallChain(this, this.pathSampler, {
       onReachedEnd: () => this.handleChainReachedEnd(),
-      onMatch: (color, count, x, y) => this.handleMatch(color, count, x, y),
-      onCrash: (x, y, comboReaction) => this.handleCrash(x, y, comboReaction),
+      onMatch: (color, count, x, y, comboMultiplier) =>
+        this.handleMatch(color, count, x, y, comboMultiplier),
       onWaveCleared: () => this.handleWaveCleared(),
     });
 
     this.shooter = new Shooter(this);
+
+    // Initialize debug panel after ballChain and shooter are active
+    this.setupDebugPanel();
 
     // Aiming tracking (only when not paused/ended)
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
@@ -74,8 +100,9 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (this.isPaused || this.isGameEnded || this.gameOverBanner) return;
 
-      // Don't fire if clicking inside top HUD bar area (y < 85)
+      // Don't fire if clicking inside top HUD bar area (y < 85) or debug panel (y > 670 when open)
       if (pointer.y < 85) return;
+      if (this.isDebugOpen && pointer.y > 640) return;
 
       if (pointer.rightButtonDown() || pointer.button === 2) {
         this.shooter.swapColors();
@@ -94,21 +121,33 @@ export class GameScene extends Phaser.Scene {
     });
 
     // Pause toggle: P or ESC
-    this.input.keyboard?.on('keydown-P', () => {
-      this.togglePause();
-    });
-    this.input.keyboard?.on('keydown-ESC', () => {
-      this.togglePause();
-    });
+    this.input.keyboard?.on('keydown-P', () => this.togglePause());
+    this.input.keyboard?.on('keydown-ESC', () => this.togglePause());
 
     // Restart shortcut: R
-    this.input.keyboard?.on('keydown-R', () => {
-      this.restartCurrentLevel();
-    });
+    this.input.keyboard?.on('keydown-R', () => this.restartCurrentLevel());
+
+    // Debug panel toggle: D
+    this.input.keyboard?.on('keydown-D', () => this.toggleDebugPanel());
   }
 
   public override update(time: number, delta: number): void {
-    // Freeze all gameplay when paused, ended, or at vortex breach
+    // Real-time FPS monitoring (refreshed every 250ms for clean readability)
+    if (time - this.lastFpsUpdate > 250) {
+      this.lastFpsUpdate = time;
+      const fps = Math.round(this.game.loop.actualFps);
+      if (this.fpsText) {
+        this.fpsText.setText(`${fps} FPS`);
+        if (fps >= 55) {
+          this.fpsText.setColor('#10b981');
+        } else if (fps >= 35) {
+          this.fpsText.setColor('#f59e0b');
+        } else {
+          this.fpsText.setColor('#ef4444');
+        }
+      }
+    }
+
     if (this.isPaused || this.isGameEnded) return;
 
     if (this.ballChain) {
@@ -172,41 +211,80 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Renders the visible hazard / vortex marker at the path's terminus.
+   * Renders the mystical vortex singularity at the track's endpoint.
+   * Features a rotating runic outer ring, event horizon, and pulsating core.
    */
   private renderEndpointMarker(): void {
     const endPoint = this.pathSampler.getPointAtDistance(this.pathSampler.totalLength);
 
     this.endpointMarker = this.add.container(endPoint.x, endPoint.y);
+    this.endpointMarker.setDepth(15);
 
-    const g = this.add.graphics();
-    this.endpointMarker.add(g);
+    // 1. Outer hazard glow aura
+    const auraG = this.add.graphics();
+    auraG.fillStyle(0x7f1d1d, 0.45);
+    auraG.fillCircle(0, 0, 54);
+    auraG.fillStyle(0xdc2626, 0.2);
+    auraG.fillCircle(0, 0, 46);
+    this.endpointMarker.add(auraG);
 
-    // Outer hazard aura
-    g.fillStyle(0x7f1d1d, 0.4);
-    g.fillCircle(0, 0, 46);
+    // 2. Rotating Runic Wheel with 8 arcane teeth / spikes
+    const runicWheel = this.add.container(0, 0);
+    const wheelG = this.add.graphics();
 
-    // Danger ring
-    g.lineStyle(3, 0xef4444, 0.85);
-    g.strokeCircle(0, 0, 38);
+    wheelG.lineStyle(2.5, 0xef4444, 0.85);
+    wheelG.strokeCircle(0, 0, 40);
 
-    // Dark vortex abyss
-    g.fillStyle(0x090d16, 1);
-    g.fillCircle(0, 0, 32);
+    const teethCount = 8;
+    for (let i = 0; i < teethCount; i++) {
+      const angle = (Math.PI * 2 * i) / teethCount;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const outerCos = Math.cos(angle + 0.15);
+      const outerSin = Math.sin(angle + 0.15);
 
-    // Swirling inner energy core
-    g.fillStyle(0xdc2626, 0.9);
-    g.fillCircle(0, 0, 16);
+      wheelG.fillStyle(0xb91c1c, 0.9);
+      wheelG.beginPath();
+      wheelG.moveTo(cos * 38, sin * 38);
+      wheelG.lineTo(outerCos * 47, outerSin * 47);
+      wheelG.lineTo(Math.cos(angle - 0.15) * 47, Math.sin(angle - 0.15) * 47);
+      wheelG.closePath();
+      wheelG.fillPath();
+    }
+    runicWheel.add(wheelG);
+    this.endpointMarker.add(runicWheel);
 
-    g.fillStyle(0xfca5a5, 0.9);
-    g.fillCircle(0, 0, 7);
-
-    // Subtle pulsing animation
+    // Continuous clockwise rotation for the runic teeth
     this.tweens.add({
-      targets: this.endpointMarker,
-      scaleX: 1.12,
-      scaleY: 1.12,
-      duration: 750,
+      targets: runicWheel,
+      angle: 360,
+      duration: 10000,
+      repeat: -1,
+      ease: 'Linear',
+    });
+
+    // 3. Dark Singularity / Event Horizon
+    const coreG = this.add.graphics();
+    coreG.fillStyle(0x020408, 1);
+    coreG.fillCircle(0, 0, 33);
+
+    // Inner swirling accretion glow
+    coreG.lineStyle(3, 0xdc2626, 0.9);
+    coreG.strokeCircle(0, 0, 24);
+
+    coreG.fillStyle(0xef4444, 0.85);
+    coreG.fillCircle(0, 0, 14);
+
+    coreG.fillStyle(0xfecaca, 0.95);
+    coreG.fillCircle(0, 0, 6);
+    this.endpointMarker.add(coreG);
+
+    // Rhythmic breathing / suction pulsation
+    this.tweens.add({
+      targets: coreG,
+      scaleX: 1.15,
+      scaleY: 1.15,
+      duration: 800,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
@@ -214,25 +292,74 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Draws a clean dark grid backdrop with subtle border framing.
+   * Draws an ancient mystical stone temple floor with flagstone masonry,
+   * glowing dais for the shooter, and carved border framing.
    */
   private renderBackground(): void {
     this.backgroundGraphics = this.add.graphics();
+    this.backgroundGraphics.setDepth(0);
 
-    this.backgroundGraphics.fillStyle(0x090d16, 1);
+    // Deep slate base
+    this.backgroundGraphics.fillStyle(0x070b14, 1);
     this.backgroundGraphics.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
-    this.backgroundGraphics.lineStyle(1, 0x1e293b, 0.2);
-    const gridSize = 40;
-    for (let x = 0; x <= GAME_WIDTH; x += gridSize) {
-      this.backgroundGraphics.lineBetween(x, 0, x, GAME_HEIGHT);
-    }
-    for (let y = 0; y <= GAME_HEIGHT; y += gridSize) {
-      this.backgroundGraphics.lineBetween(0, y, GAME_WIDTH, y);
+    // 1. Large masonry flagstone tiles (80x80)
+    const tileSize = 80;
+    for (let x = 0; x < GAME_WIDTH; x += tileSize) {
+      for (let y = 0; y < GAME_HEIGHT; y += tileSize) {
+        const isAlt = ((x / tileSize) + (y / tileSize)) % 2 === 0;
+
+        // Subtle tile surface variation
+        this.backgroundGraphics.fillStyle(isAlt ? 0x090f1d : 0x0c1322, 1);
+        this.backgroundGraphics.fillRect(x + 1, y + 1, tileSize - 2, tileSize - 2);
+
+        // Mortar shadow lines
+        this.backgroundGraphics.lineStyle(1.5, 0x03060a, 0.8);
+        this.backgroundGraphics.strokeRect(x, y, tileSize, tileSize);
+
+        // Subtle inner stone bevel
+        this.backgroundGraphics.lineStyle(1, 0x1e293b, 0.25);
+        this.backgroundGraphics.lineBetween(x + 2, y + 2, x + tileSize - 2, y + 2);
+        this.backgroundGraphics.lineBetween(x + 2, y + 2, x + 2, y + tileSize - 2);
+      }
     }
 
-    this.backgroundGraphics.lineStyle(2, 0x334155, 0.7);
-    this.backgroundGraphics.strokeRect(12, 12, GAME_WIDTH - 24, GAME_HEIGHT - 24);
+    // 2. Arcane circular dais beneath the Shooter platform (x: 640, y: 640)
+    this.backgroundGraphics.fillStyle(0x020408, 0.6);
+    this.backgroundGraphics.fillCircle(640, 640, 95);
+
+    this.backgroundGraphics.lineStyle(2, 0x0284c7, 0.4);
+    this.backgroundGraphics.strokeCircle(640, 640, 90);
+
+    this.backgroundGraphics.lineStyle(1.5, 0x38bdf8, 0.3);
+    this.backgroundGraphics.strokeCircle(640, 640, 75);
+
+    // Radiant spokes from dais
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 6) {
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      this.backgroundGraphics.lineBetween(
+        640 + cos * 75, 640 + sin * 75,
+        640 + cos * 90, 640 + sin * 90
+      );
+    }
+
+    // 3. Temple outer decorative border
+    this.backgroundGraphics.lineStyle(3, 0x334155, 0.85);
+    this.backgroundGraphics.strokeRect(10, 10, GAME_WIDTH - 20, GAME_HEIGHT - 20);
+
+    this.backgroundGraphics.lineStyle(1, 0x64748b, 0.4);
+    this.backgroundGraphics.strokeRect(15, 15, GAME_WIDTH - 30, GAME_HEIGHT - 30);
+
+    // Corner decorative brackets
+    const corners = [
+      [10, 10], [GAME_WIDTH - 10, 10],
+      [10, GAME_HEIGHT - 10], [GAME_WIDTH - 10, GAME_HEIGHT - 10]
+    ];
+    for (const [cx, cy] of corners) {
+      this.backgroundGraphics.fillStyle(0x38bdf8, 0.6);
+      this.backgroundGraphics.fillCircle(cx, cy, 4);
+    }
   }
 
   /**
@@ -249,7 +376,7 @@ export class GameScene extends Phaser.Scene {
     hudContainer.add(hudBg);
 
     // Brand title
-    const titleText = this.add.text(45, 33, 'ORBBOUND', {
+    const titleText = this.add.text(42, 33, 'ORBBOUND', {
       fontFamily: 'system-ui, -apple-system, sans-serif',
       fontSize: '20px',
       fontStyle: 'bold',
@@ -258,7 +385,7 @@ export class GameScene extends Phaser.Scene {
     hudContainer.add(titleText);
 
     // Level label
-    this.levelText = this.add.text(205, 34, 'LVL 1', {
+    this.levelText = this.add.text(172, 34, 'LVL 1', {
       fontFamily: 'monospace',
       fontSize: '17px',
       fontStyle: 'bold',
@@ -267,7 +394,7 @@ export class GameScene extends Phaser.Scene {
     hudContainer.add(this.levelText);
 
     // Score label
-    this.scoreText = this.add.text(300, 34, 'SCORE: 000000', {
+    this.scoreText = this.add.text(250, 34, 'SCORE: 000000', {
       fontFamily: 'monospace',
       fontSize: '17px',
       fontStyle: 'bold',
@@ -276,7 +403,7 @@ export class GameScene extends Phaser.Scene {
     hudContainer.add(this.scoreText);
 
     // Combo label
-    this.comboText = this.add.text(495, 34, 'COMBO: x1', {
+    this.comboText = this.add.text(425, 34, 'COMBO: x1', {
       fontFamily: 'monospace',
       fontSize: '17px',
       fontStyle: 'bold',
@@ -284,13 +411,30 @@ export class GameScene extends Phaser.Scene {
     });
     hudContainer.add(this.comboText);
 
+    // FPS Counter Badge
+    const fpsBg = this.add.graphics();
+    fpsBg.fillStyle(0x0a101d, 0.95);
+    fpsBg.fillRoundedRect(535, 27, 88, 34, 6);
+    fpsBg.lineStyle(1.5, 0x1e293b, 0.9);
+    fpsBg.strokeRoundedRect(535, 27, 88, 34, 6);
+    hudContainer.add(fpsBg);
+
+    this.fpsText = this.add.text(579, 44, '60 FPS', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      fontStyle: 'bold',
+      color: '#10b981',
+    });
+    this.fpsText.setOrigin(0.5, 0.5);
+    hudContainer.add(this.fpsText);
+
     // --- Interactive Action Buttons in HUD ---
 
     // 1. Pause Button
     const pauseBtn = this.createButton(
-      740,
+      690,
       44,
-      120,
+      115,
       36,
       '❚❚ PAUSE (P)',
       0x1e293b,
@@ -303,9 +447,9 @@ export class GameScene extends Phaser.Scene {
 
     // 2. Restart Level Button
     const restartBtn = this.createButton(
-      885,
+      825,
       44,
-      135,
+      130,
       36,
       '↻ RESTART (R)',
       0x1e293b,
@@ -317,9 +461,9 @@ export class GameScene extends Phaser.Scene {
 
     // 3. End Game Button
     const endBtn = this.createButton(
-      1035,
+      965,
       44,
-      120,
+      115,
       36,
       '✕ END GAME',
       0x1e293b,
@@ -329,12 +473,31 @@ export class GameScene extends Phaser.Scene {
     );
     hudContainer.add(endBtn.container);
 
+    // 4. Debug Panel Toggle Button
+    const debugBtn = this.createButton(
+      1110,
+      44,
+      130,
+      36,
+      '🛠 DEBUG (D)',
+      0x1e293b,
+      0x3b82f6,
+      0x60a5fa,
+      () => this.toggleDebugPanel()
+    );
+    hudContainer.add(debugBtn.container);
+
     // Helper hint text along bottom right
-    const hintText = this.add.text(GAME_WIDTH - 36, GAME_HEIGHT - 22, 'Aim & Left-Click: Fire | Right-Click / Space: Swap | P: Pause | R: Restart', {
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      fontSize: '11px',
-      color: '#64748b',
-    });
+    const hintText = this.add.text(
+      GAME_WIDTH - 36,
+      GAME_HEIGHT - 22,
+      'Aim & Left-Click: Fire | Right-Click / Space: Swap | P: Pause | R: Restart | D: Debug Controls',
+      {
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+        fontSize: '11px',
+        color: '#64748b',
+      }
+    );
     hintText.setOrigin(1, 0.5);
 
     // Subscribe to score updates
@@ -343,6 +506,163 @@ export class GameScene extends Phaser.Scene {
       this.levelText.setText(`LVL ${level}`);
       this.comboText.setText(`COMBO: x${combo}`);
     });
+  }
+
+  /**
+   * Day 1 Designer Debug & Tuning Panel (Task 8).
+   * Allows live tuning of chain speed, projectile speed, and instant cascade testing.
+   */
+  private setupDebugPanel(): void {
+    this.debugContainer = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT - 45);
+    this.debugContainer.setDepth(80);
+    this.debugContainer.setVisible(false);
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0x090d16, 0.95);
+    bg.fillRoundedRect(-580, -32, 1160, 64, 10);
+    bg.lineStyle(1.5, 0x3b82f6, 0.7);
+    bg.strokeRoundedRect(-580, -32, 1160, 64, 10);
+    this.debugContainer.add(bg);
+
+    const title = this.add.text(-560, -18, 'DEV CONTROLS', {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      fontStyle: 'bold',
+      color: '#3b82f6',
+    });
+    this.debugContainer.add(title);
+
+    // --- Chain Speed Tuning ---
+    this.debugSpeedLabel = this.add.text(-440, 2, `SPEED: ${CHAIN_SPEED} px/s`, {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#f8fafc',
+    });
+    this.debugContainer.add(this.debugSpeedLabel);
+
+    const speedDown = this.createButton(-335, 8, 28, 26, '-10', 0x1e293b, 0x334155, 0x38bdf8, () => {
+      const newSpeed = Math.max(10, this.ballChain.getSpeed() - 10);
+      this.ballChain.setSpeed(newSpeed);
+      this.debugSpeedLabel?.setText(`SPEED: ${newSpeed} px/s`);
+    });
+    this.debugContainer.add(speedDown.container);
+
+    const speedUp = this.createButton(-295, 8, 28, 26, '+10', 0x1e293b, 0x334155, 0x38bdf8, () => {
+      const newSpeed = this.ballChain.getSpeed() + 10;
+      this.ballChain.setSpeed(newSpeed);
+      this.debugSpeedLabel?.setText(`SPEED: ${newSpeed} px/s`);
+    });
+    this.debugContainer.add(speedUp.container);
+
+    // --- Projectile Speed Tuning (Phase 4: 800, 950, 1050, 1200) ---
+    this.debugProjSpeedLabel = this.add.text(-240, 2, `PROJ: ${PROJECTILE_SPEED}`, {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#f8fafc',
+    });
+    this.debugContainer.add(this.debugProjSpeedLabel);
+
+    const projSpeeds = [950, 1100, 1250, 1400];
+    let projIdx = projSpeeds.indexOf(PROJECTILE_SPEED);
+    if (projIdx === -1) projIdx = 2;
+
+    const cycleProj = this.createButton(-130, 8, 75, 26, 'Cycle Vel', 0x1e293b, 0x334155, 0x38bdf8, () => {
+      projIdx = (projIdx + 1) % projSpeeds.length;
+      const nextSpd = projSpeeds[projIdx];
+      this.shooter.projectileSpeed = nextSpd;
+      this.debugProjSpeedLabel?.setText(`PROJ: ${nextSpd}`);
+      this.showTemporaryToast(`PROJ SPEED: ${nextSpd} px/s`);
+    });
+    this.debugContainer.add(cycleProj.container);
+
+    // --- Phase 3 Test Case Launcher ---
+    // Spawns: RED RED GREEN GREEN GREEN RED RED
+    const phase3Btn = this.createButton(
+      60,
+      8,
+      210,
+      26,
+      '🎯 Spawn Phase-3 Cascade Test',
+      0x1e293b,
+      0x059669,
+      0x34d399,
+      () => this.spawnPhase3TestCase()
+    );
+    this.debugContainer.add(phase3Btn.container);
+
+    // --- Reset to Fixed Test Level ---
+    const resetFixedBtn = this.createButton(
+      240,
+      8,
+      125,
+      26,
+      '↻ Fixed Level 1',
+      0x1e293b,
+      0xd97706,
+      0xfbbf24,
+      () => this.restartCurrentLevel()
+    );
+    this.debugContainer.add(resetFixedBtn.container);
+
+    // --- Toggle Rollback Physics (Phase 6) ---
+    const isRollbackActive = this.ballChain ? this.ballChain.enableRollbackPhysics : ENABLE_ROLLBACK_PHYSICS;
+    const rollbackBtn = this.createButton(
+      410,
+      8,
+      175,
+      26,
+      isRollbackActive ? 'Rollback: ON' : 'Rollback: OFF (Day 1)',
+      0x1e293b,
+      0x334155,
+      0xa855f7,
+      () => {
+        if (!this.ballChain) return;
+        this.ballChain.enableRollbackPhysics = !this.ballChain.enableRollbackPhysics;
+        rollbackBtn.label.setText(
+          this.ballChain.enableRollbackPhysics ? 'Rollback: ON' : 'Rollback: OFF (Day 1)'
+        );
+        this.showTemporaryToast(
+          `ROLLBACK PHYSICS: ${this.ballChain.enableRollbackPhysics ? 'ENABLED' : 'DISABLED (DAY 1 MODE)'}`
+        );
+      }
+    );
+    this.debugContainer.add(rollbackBtn.container);
+  }
+
+  private toggleDebugPanel(): void {
+    this.isDebugOpen = !this.isDebugOpen;
+    this.debugContainer?.setVisible(this.isDebugOpen);
+    AudioSynth.playUiClick();
+  }
+
+  /**
+   * Spawns the exact Phase 3 example from the brief:
+   * [RED, RED, GREEN, GREEN, GREEN, RED, RED]
+   * Pre-loads the shooter with a GREEN orb so a single shot triggers:
+   * Match 3 green -> pop -> gap collapses -> 4 red meet -> secondary cascade match!
+   */
+  public spawnPhase3TestCase(): void {
+    AudioSynth.playUiClick();
+    for (const p of this.projectiles) p.destroy();
+    this.projectiles = [];
+
+    const testPattern: BallColor[] = [
+      BallColor.RED,
+      BallColor.RED,
+      BallColor.GREEN,
+      BallColor.GREEN,
+      BallColor.GREEN,
+      BallColor.RED,
+      BallColor.RED,
+    ];
+
+    this.ballChain.spawnInitialChain(testPattern);
+
+    // Ensure player has GREEN to test the trigger
+    this.shooter.currentColor = BallColor.GREEN;
+    this.shooter.nextColor = BallColor.RED;
+
+    this.showTemporaryToast('PHASE 3 TEST LOADED: 🔴🔴 🟢🟢🟢 🔴🔴');
   }
 
   /**
@@ -374,7 +694,7 @@ export class GameScene extends Phaser.Scene {
 
     const label = this.add.text(0, 0, text, {
       fontFamily: 'system-ui, -apple-system, sans-serif',
-      fontSize: '13px',
+      fontSize: '12px',
       fontStyle: 'bold',
       color: `#${textColorHex.toString(16).padStart(6, '0')}`,
     });
@@ -431,14 +751,15 @@ export class GameScene extends Phaser.Scene {
     this.pauseModal = this.add.container(0, 0);
     this.pauseModal.setDepth(100);
 
-    // Dimmed backdrop
     const backdrop = this.add.graphics();
     backdrop.fillStyle(0x050811, 0.78);
     backdrop.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    backdrop.setInteractive(new Phaser.Geom.Rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT), Phaser.Geom.Rectangle.Contains);
+    backdrop.setInteractive(
+      new Phaser.Geom.Rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT),
+      Phaser.Geom.Rectangle.Contains
+    );
     this.pauseModal.add(backdrop);
 
-    // Modal dialog box
     const modalBox = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2);
     this.pauseModal.add(modalBox);
 
@@ -449,7 +770,6 @@ export class GameScene extends Phaser.Scene {
     panelBg.strokeRoundedRect(-220, -170, 440, 340, 14);
     modalBox.add(panelBg);
 
-    // Title
     const title = this.add.text(0, -125, 'GAME PAUSED', {
       fontFamily: 'system-ui, -apple-system, sans-serif',
       fontSize: '26px',
@@ -459,7 +779,6 @@ export class GameScene extends Phaser.Scene {
     title.setOrigin(0.5);
     modalBox.add(title);
 
-    // Stats breakdown
     const statsText = this.add.text(
       0,
       -75,
@@ -473,7 +792,6 @@ export class GameScene extends Phaser.Scene {
     statsText.setOrigin(0.5);
     modalBox.add(statsText);
 
-    // Resume button
     const resumeBtn = this.createButton(
       0,
       -20,
@@ -487,7 +805,6 @@ export class GameScene extends Phaser.Scene {
     );
     modalBox.add(resumeBtn.container);
 
-    // Restart level button
     const restartBtn = this.createButton(
       0,
       42,
@@ -501,7 +818,6 @@ export class GameScene extends Phaser.Scene {
     );
     modalBox.add(restartBtn.container);
 
-    // End game button
     const endBtn = this.createButton(
       0,
       104,
@@ -515,7 +831,6 @@ export class GameScene extends Phaser.Scene {
     );
     modalBox.add(endBtn.container);
 
-    // Gentle pop-in scale tween
     modalBox.setScale(0.92);
     modalBox.setAlpha(0);
     this.tweens.add({
@@ -535,12 +850,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Restarts the current level with a fresh orb chain and cleared projectiles.
+   * Restarts current level using the fixed sequence for Level 1 (Phase 9).
    */
   public restartCurrentLevel(): void {
     AudioSynth.playUiClick();
 
-    // Dismiss modals if open
     this.hidePauseModal();
     this.hideEndGameModal();
     if (this.gameOverBanner) {
@@ -556,28 +870,26 @@ export class GameScene extends Phaser.Scene {
     this.isGameEnded = false;
     this.pauseBtnText.setText('❚❚ PAUSE (P)');
 
-    // Destroy active flying projectiles
     for (const proj of this.projectiles) {
       proj.destroy();
     }
     this.projectiles = [];
 
-    // Reset current level combo
     this.scoreSystem.resetForCurrentLevel();
 
-    // Re-spawn fresh chain for current level difficulty
     const currentLevel = this.scoreSystem.getLevel();
-    const ballCount = 25 + currentLevel * 2;
-    const speed = 45 + currentLevel * 6;
-    this.ballChain.setSpeed(speed);
-    this.ballChain.spawnInitialChain(ballCount);
+    if (currentLevel === 1) {
+      this.ballChain.spawnInitialChain(FIXED_LEVEL_SEQUENCE);
+    } else {
+      const ballCount = 25 + currentLevel * 2;
+      this.ballChain.spawnInitialChain(ballCount);
+    }
 
-    // Floating feedback banner
     this.showTemporaryToast(`LEVEL ${currentLevel} RESTARTED`);
   }
 
   /**
-   * Ends the current game session and presents the Game Over / Summary screen.
+   * Ends current session and shows the summary card.
    */
   public endGame(): void {
     AudioSynth.playUiClick();
@@ -586,7 +898,6 @@ export class GameScene extends Phaser.Scene {
     this.isPaused = false;
     this.isGameEnded = true;
 
-    // Destroy active flying projectiles
     for (const proj of this.projectiles) {
       proj.destroy();
     }
@@ -596,7 +907,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Displays the Game Over / Session Summary modal.
+   * Game Over / Session summary card.
    */
   private showEndGameModal(): void {
     if (this.endGameModal) return;
@@ -604,11 +915,13 @@ export class GameScene extends Phaser.Scene {
     this.endGameModal = this.add.container(0, 0);
     this.endGameModal.setDepth(100);
 
-    // Dark backdrop
     const backdrop = this.add.graphics();
     backdrop.fillStyle(0x050811, 0.85);
     backdrop.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    backdrop.setInteractive(new Phaser.Geom.Rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT), Phaser.Geom.Rectangle.Contains);
+    backdrop.setInteractive(
+      new Phaser.Geom.Rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT),
+      Phaser.Geom.Rectangle.Contains
+    );
     this.endGameModal.add(backdrop);
 
     const modalBox = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2);
@@ -621,7 +934,6 @@ export class GameScene extends Phaser.Scene {
     panelBg.strokeRoundedRect(-240, -190, 480, 380, 16);
     modalBox.add(panelBg);
 
-    // Title
     const title = this.add.text(0, -145, 'GAME OVER', {
       fontFamily: 'system-ui, -apple-system, sans-serif',
       fontSize: '28px',
@@ -631,7 +943,6 @@ export class GameScene extends Phaser.Scene {
     title.setOrigin(0.5);
     modalBox.add(title);
 
-    // Score Summary Card
     const cardBg = this.add.graphics();
     cardBg.fillStyle(0x1e293b, 0.85);
     cardBg.fillRoundedRect(-190, -100, 380, 120, 10);
@@ -667,7 +978,6 @@ export class GameScene extends Phaser.Scene {
     detailsText.setOrigin(0.5);
     modalBox.add(detailsText);
 
-    // Play Again (Reset from Level 1) Button
     const playAgainBtn = this.createButton(
       0,
       50,
@@ -681,7 +991,6 @@ export class GameScene extends Phaser.Scene {
     );
     modalBox.add(playAgainBtn.container);
 
-    // Restart Current Level Button
     const restartLevelBtn = this.createButton(
       0,
       110,
@@ -695,7 +1004,6 @@ export class GameScene extends Phaser.Scene {
     );
     modalBox.add(restartLevelBtn.container);
 
-    // Pop-in animation
     modalBox.setScale(0.9);
     modalBox.setAlpha(0);
     this.tweens.add({
@@ -715,7 +1023,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Resets score, resets level to 1, and spawns fresh game.
+   * Resets score, level to 1, and spawns the fixed Level 1 test layout.
    */
   public startFreshGame(): void {
     AudioSynth.playUiClick();
@@ -736,29 +1044,26 @@ export class GameScene extends Phaser.Scene {
     this.projectiles = [];
 
     this.scoreSystem.resetAll();
-    this.ballChain.setSpeed(45);
-    this.ballChain.spawnInitialChain(25);
+    this.ballChain.setSpeed(CHAIN_SPEED);
+    this.ballChain.spawnInitialChain(FIXED_LEVEL_SEQUENCE);
 
-    this.showTemporaryToast('NEW GAME STARTED - LEVEL 1');
+    this.showTemporaryToast('NEW GAME STARTED - FIXED LEVEL 1');
   }
 
-  /**
-   * Floating notification toast banner.
-   */
   private showTemporaryToast(message: string): void {
     const toast = this.add.container(GAME_WIDTH / 2, 105);
     toast.setDepth(90);
 
     const bg = this.add.graphics();
     bg.fillStyle(0x0f172a, 0.95);
-    bg.fillRoundedRect(-160, -18, 320, 36, 8);
+    bg.fillRoundedRect(-180, -18, 360, 36, 8);
     bg.lineStyle(1.5, 0x38bdf8, 0.8);
-    bg.strokeRoundedRect(-160, -18, 320, 36, 8);
+    bg.strokeRoundedRect(-180, -18, 360, 36, 8);
     toast.add(bg);
 
     const text = this.add.text(0, 0, message, {
       fontFamily: 'monospace',
-      fontSize: '14px',
+      fontSize: '13px',
       fontStyle: 'bold',
       color: '#38bdf8',
     });
@@ -775,7 +1080,7 @@ export class GameScene extends Phaser.Scene {
       duration: 180,
       ease: 'Quad.easeOut',
       onComplete: () => {
-        this.time.delayedCall(1200, () => {
+        this.time.delayedCall(1400, () => {
           this.tweens.add({
             targets: toast,
             alpha: 0,
@@ -790,23 +1095,23 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Triggers score and visual floating text when a match occurs.
+   * Phase 7: Score calculation and floating text for match events.
    */
-  private handleMatch(_color: string, count: number, x: number, y: number): void {
-    const combo = this.scoreSystem.getCombo();
-    const points = count * 100 * combo;
-    this.scoreSystem.addScore(points);
-    this.scoreSystem.incrementCombo();
+  private handleMatch(
+    _color: string,
+    count: number,
+    x: number,
+    y: number,
+    comboMultiplier: number
+  ): void {
+    const points = this.scoreSystem.recordMatch(count, comboMultiplier);
 
-    AudioSynth.playMatch(combo);
-
-    // Floating combat text
-    const textStr = combo > 1 ? `+${points}\nCOMBO x${combo}!` : `+${points}`;
+    const textStr = comboMultiplier > 1 ? `+${points}\nCHAIN x${comboMultiplier}!` : `+${points}`;
     const floatText = this.add.text(x, y - 10, textStr, {
       fontFamily: 'monospace',
-      fontSize: combo > 1 ? '20px' : '16px',
+      fontSize: comboMultiplier > 1 ? '20px' : '16px',
       fontStyle: 'bold',
-      color: combo > 1 ? '#f59e0b' : '#38bdf8',
+      color: comboMultiplier > 1 ? '#f59e0b' : '#38bdf8',
       align: 'center',
     });
     floatText.setOrigin(0.5);
@@ -823,30 +1128,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Triggered when rollback crashes back into the rear chain with momentum pushback.
-   */
-  private handleCrash(x: number, y: number, comboReaction: boolean): void {
-    const floatText = this.add.text(x, y - 18, comboReaction ? 'COMBO SLAM!' : 'CRASH!', {
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      fontSize: comboReaction ? '18px' : '14px',
-      fontStyle: 'bold',
-      color: comboReaction ? '#f59e0b' : '#38bdf8',
-    });
-    floatText.setOrigin(0.5);
-
-    this.tweens.add({
-      targets: floatText,
-      y: y - 48,
-      alpha: 0,
-      scale: 1.25,
-      duration: 650,
-      ease: 'Quad.easeOut',
-      onComplete: () => floatText.destroy(),
-    });
-  }
-
-  /**
-   * Called when all balls in the chain are successfully matched.
+   * Phase 8: Level clear condition.
    */
   private handleWaveCleared(): void {
     if (this.waveClearBanner || this.isGameEnded) return;
@@ -855,43 +1137,59 @@ export class GameScene extends Phaser.Scene {
     this.scoreSystem.setLevel(nextLevel);
 
     this.waveClearBanner = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40);
+    this.waveClearBanner.setDepth(95);
 
     const bannerBg = this.add.graphics();
-    bannerBg.fillStyle(0x0f172a, 0.95);
-    bannerBg.fillRoundedRect(-180, -50, 360, 100, 12);
+    bannerBg.fillStyle(0x0f172a, 0.98);
+    bannerBg.fillRoundedRect(-200, -70, 400, 140, 14);
     bannerBg.lineStyle(2, 0x10b981, 0.9);
-    bannerBg.strokeRoundedRect(-180, -50, 360, 100, 12);
+    bannerBg.strokeRoundedRect(-200, -70, 400, 140, 14);
     this.waveClearBanner.add(bannerBg);
 
-    const text = this.add.text(0, -12, 'WAVE CLEARED!', {
+    const text = this.add.text(0, -30, 'LEVEL CLEARED!', {
       fontFamily: 'system-ui, -apple-system, sans-serif',
-      fontSize: '24px',
+      fontSize: '26px',
       fontStyle: 'bold',
       color: '#10b981',
     });
     text.setOrigin(0.5);
     this.waveClearBanner.add(text);
 
-    const sub = this.add.text(0, 18, `Advancing to Level ${nextLevel}...`, {
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      fontSize: '14px',
-      color: '#94a3b8',
-    });
+    const sub = this.add.text(
+      0,
+      5,
+      `Score: ${this.scoreSystem.getScore()}  |  Best Combo: x${this.scoreSystem.getMaxCombo()}`,
+      {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: '#94a3b8',
+      }
+    );
     sub.setOrigin(0.5);
     this.waveClearBanner.add(sub);
 
-    this.time.delayedCall(1600, () => {
-      this.waveClearBanner?.destroy();
-      this.waveClearBanner = undefined;
-      // Spawn new wave with slight speed boost
-      const newSpeed = 45 + nextLevel * 6;
-      this.ballChain.setSpeed(newSpeed);
-      this.ballChain.spawnInitialChain(25 + nextLevel * 2);
-    });
+    const nextBtn = this.createButton(
+      0,
+      40,
+      220,
+      32,
+      `▶ ADVANCE TO LVL ${nextLevel}`,
+      0x1e293b,
+      0x059669,
+      0x34d399,
+      () => {
+        this.waveClearBanner?.destroy();
+        this.waveClearBanner = undefined;
+        const newSpeed = CHAIN_SPEED + (nextLevel - 1) * 6;
+        this.ballChain.setSpeed(newSpeed);
+        this.ballChain.spawnInitialChain(25 + nextLevel * 2);
+      }
+    );
+    this.waveClearBanner.add(nextBtn.container);
   }
 
   /**
-   * Invoked when the ball chain enters the terminal vortex.
+   * Phase 8: Lose condition when orbs plunge into the vortex.
    */
   private handleChainReachedEnd(): void {
     if (this.gameOverBanner || this.isGameEnded) return;
@@ -923,7 +1221,6 @@ export class GameScene extends Phaser.Scene {
     subText.setOrigin(0.5);
     this.gameOverBanner.add(subText);
 
-    // Retry Current Level button
     const retryBtn = this.createButton(
       0,
       5,
@@ -937,7 +1234,6 @@ export class GameScene extends Phaser.Scene {
     );
     this.gameOverBanner.add(retryBtn.container);
 
-    // End Game button
     const endBtn = this.createButton(
       0,
       60,

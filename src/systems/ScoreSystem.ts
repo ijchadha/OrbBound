@@ -3,7 +3,12 @@ export interface ScoreListener {
 }
 
 /**
- * ScoreSystem encapsulates game scoring, combo multiplier tracking, and level state.
+ * ScoreSystem encapsulates game scoring, cascade combo multiplier tracking, and level state.
+ *
+ * Phase 7 Scoring Rules:
+ * - Base points: 10 per ball (3 balls = 30, 4 balls = 40, 5 balls = 50)
+ * - Combo Multiplier: Represents consecutive chain-reaction matches in ONE shot resolution
+ *   (1st match: x1, 2nd match via collapse: x2, 3rd match: x3...)
  */
 export class ScoreSystem {
   private score: number = 0;
@@ -30,15 +35,20 @@ export class ScoreSystem {
     }
   }
 
-  public addScore(points: number): void {
-    this.score += points * this.combo;
-    this.notify();
-  }
+  /**
+   * Records a match event using Phase 7 rules.
+   * Returns the points earned from this match event.
+   */
+  public recordMatch(ballCount: number, cascadeMultiplier: number = 1): number {
+    const basePoints = ballCount * 10;
+    const earned = basePoints * cascadeMultiplier;
 
-  public incrementCombo(): void {
-    this.combo += 1;
-    this.maxCombo = Math.max(this.maxCombo, this.combo);
+    this.score += earned;
+    this.combo = cascadeMultiplier;
+    this.maxCombo = Math.max(this.maxCombo, cascadeMultiplier);
     this.notify();
+
+    return earned;
   }
 
   public resetCombo(): void {
