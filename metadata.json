@@ -1,0 +1,6 @@
+{
+  "name": "Orbbound",
+  "description": "Zuma-inspired 2D arcade puzzle game built with Phaser 3 and TypeScript.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
