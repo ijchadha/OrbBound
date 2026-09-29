@@ -235,6 +235,17 @@ export class Shooter {
     AudioSynth.playSwap();
   }
 
+  /**
+   * Directly sets loaded and queued colors (used by test presets & level setup).
+   */
+  public setLoadedColors(current: BallColor, next: BallColor): void {
+    this.currentColor = current;
+    this.nextColor = next;
+    this.loadedOrbSprite.setTexture(`orb_${this.currentColor}`);
+    this.nextOrbSprite.setTexture(`orb_${this.nextColor}`);
+    this.renderAimLine();
+  }
+
   public get x(): number {
     return this.container.x;
   }

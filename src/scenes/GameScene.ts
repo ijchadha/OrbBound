@@ -13,6 +13,7 @@ import {
   FIXED_LEVEL_SEQUENCE,
   GAME_HEIGHT,
   GAME_WIDTH,
+  INITIAL_BALL_COUNT,
   PROJECTILE_SPEED,
   SHOOT_COOLDOWN,
 } from '../utils/constants';
@@ -38,14 +39,17 @@ export class GameScene extends Phaser.Scene {
   private scoreText!: Phaser.GameObjects.Text;
   private levelText!: Phaser.GameObjects.Text;
   private comboText!: Phaser.GameObjects.Text;
+  private chainBallsText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
   private lastFpsUpdate: number = 0;
   private pauseBtnText!: Phaser.GameObjects.Text;
+  private lastShotMatches: number = 0;
 
   // Debug Panel elements
   private debugContainer?: Phaser.GameObjects.Container;
   private debugSpeedLabel?: Phaser.GameObjects.Text;
   private debugProjSpeedLabel?: Phaser.GameObjects.Text;
+  private debugTelemetryText?: Phaser.GameObjects.Text;
 
   // Modals & Overlays
   private pauseModal?: Phaser.GameObjects.Container;
@@ -83,6 +87,8 @@ export class GameScene extends Phaser.Scene {
       onMatch: (color, count, x, y, comboMultiplier) =>
         this.handleMatch(color, count, x, y, comboMultiplier),
       onWaveCleared: () => this.handleWaveCleared(),
+      onShotResolved: (matchesCount, finalCombo, remainingBalls) =>
+        this.updateChainDebugTelemetry(matchesCount, finalCombo, remainingBalls),
     });
 
     this.shooter = new Shooter(this);
@@ -175,10 +181,19 @@ export class GameScene extends Phaser.Scene {
       );
 
       if (collision) {
-        this.ballChain.insertBallAt(proj.color, collision.insertIndex);
+        const matches = this.ballChain.insertBallAt(proj.color, collision.insertIndex);
         proj.destroy();
         this.projectiles.splice(i, 1);
+
+        // Day-1 Requirement 2: A normal shot that produces no match must reset the combo
+        if (matches === 0) {
+          this.scoreSystem.resetCombo();
+        }
       }
+    }
+
+    if (this.chainBallsText && this.ballChain) {
+      this.chainBallsText.setText(`BALLS: ${this.ballChain.getBalls().length}`);
     }
   }
 
@@ -403,7 +418,7 @@ export class GameScene extends Phaser.Scene {
     hudContainer.add(this.scoreText);
 
     // Combo label
-    this.comboText = this.add.text(425, 34, 'COMBO: x1', {
+    this.comboText = this.add.text(410, 34, 'COMBO: x1', {
       fontFamily: 'monospace',
       fontSize: '17px',
       fontStyle: 'bold',
@@ -411,17 +426,26 @@ export class GameScene extends Phaser.Scene {
     });
     hudContainer.add(this.comboText);
 
+    // Ball Count label (Day-1 Requirement 10)
+    this.chainBallsText = this.add.text(515, 34, 'BALLS: 25', {
+      fontFamily: 'monospace',
+      fontSize: '17px',
+      fontStyle: 'bold',
+      color: '#10b981',
+    });
+    hudContainer.add(this.chainBallsText);
+
     // FPS Counter Badge
     const fpsBg = this.add.graphics();
     fpsBg.fillStyle(0x0a101d, 0.95);
-    fpsBg.fillRoundedRect(535, 27, 88, 34, 6);
+    fpsBg.fillRoundedRect(620, 27, 84, 34, 6);
     fpsBg.lineStyle(1.5, 0x1e293b, 0.9);
-    fpsBg.strokeRoundedRect(535, 27, 88, 34, 6);
+    fpsBg.strokeRoundedRect(620, 27, 84, 34, 6);
     hudContainer.add(fpsBg);
 
-    this.fpsText = this.add.text(579, 44, '60 FPS', {
+    this.fpsText = this.add.text(662, 44, '60 FPS', {
       fontFamily: 'monospace',
-      fontSize: '14px',
+      fontSize: '13px',
       fontStyle: 'bold',
       color: '#10b981',
     });
@@ -432,9 +456,9 @@ export class GameScene extends Phaser.Scene {
 
     // 1. Pause Button
     const pauseBtn = this.createButton(
-      690,
+      745,
       44,
-      115,
+      110,
       36,
       '❚❚ PAUSE (P)',
       0x1e293b,
@@ -447,11 +471,11 @@ export class GameScene extends Phaser.Scene {
 
     // 2. Restart Level Button
     const restartBtn = this.createButton(
-      825,
+      870,
       44,
-      130,
+      115,
       36,
-      '↻ RESTART (R)',
+      '↻ RESTART',
       0x1e293b,
       0x334155,
       0xf59e0b,
@@ -461,11 +485,11 @@ export class GameScene extends Phaser.Scene {
 
     // 3. End Game Button
     const endBtn = this.createButton(
-      965,
+      1000,
       44,
-      115,
+      105,
       36,
-      '✕ END GAME',
+      '✕ END',
       0x1e293b,
       0x450a0a,
       0xef4444,
@@ -475,11 +499,11 @@ export class GameScene extends Phaser.Scene {
 
     // 4. Debug Panel Toggle Button
     const debugBtn = this.createButton(
-      1110,
+      1125,
       44,
-      130,
+      120,
       36,
-      '🛠 DEBUG (D)',
+      '🛠 DEV (D)',
       0x1e293b,
       0x3b82f6,
       0x60a5fa,
@@ -518,83 +542,98 @@ export class GameScene extends Phaser.Scene {
     this.debugContainer.setVisible(false);
 
     const bg = this.add.graphics();
-    bg.fillStyle(0x090d16, 0.95);
-    bg.fillRoundedRect(-580, -32, 1160, 64, 10);
+    bg.fillStyle(0x090d16, 0.96);
+    bg.fillRoundedRect(-590, -34, 1180, 68, 10);
     bg.lineStyle(1.5, 0x3b82f6, 0.7);
-    bg.strokeRoundedRect(-580, -32, 1160, 64, 10);
+    bg.strokeRoundedRect(-590, -34, 1180, 68, 10);
     this.debugContainer.add(bg);
 
-    const title = this.add.text(-560, -18, 'DEV CONTROLS', {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      fontStyle: 'bold',
-      color: '#3b82f6',
-    });
-    this.debugContainer.add(title);
+    // Live Telemetry Label (Day-1 Requirement 10)
+    const initialBalls = this.ballChain ? this.ballChain.getBalls().length : INITIAL_BALL_COUNT;
+    this.debugTelemetryText = this.add.text(
+      -575,
+      -26,
+      `[DEV] CHAIN BALLS: ${initialBalls}  |  COMBO: x1  |  LAST SHOT: 0 MATCHES`,
+      {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        fontStyle: 'bold',
+        color: '#38bdf8',
+      }
+    );
+    this.debugContainer.add(this.debugTelemetryText);
 
     // --- Chain Speed Tuning ---
-    this.debugSpeedLabel = this.add.text(-440, 2, `SPEED: ${CHAIN_SPEED} px/s`, {
+    this.debugSpeedLabel = this.add.text(-575, 4, `SPD: ${this.ballChain ? this.ballChain.getSpeed() : CHAIN_SPEED}`, {
       fontFamily: 'monospace',
-      fontSize: '12px',
+      fontSize: '11px',
       color: '#f8fafc',
     });
     this.debugContainer.add(this.debugSpeedLabel);
 
-    const speedDown = this.createButton(-335, 8, 28, 26, '-10', 0x1e293b, 0x334155, 0x38bdf8, () => {
+    const speedDown = this.createButton(-505, 8, 26, 24, '-10', 0x1e293b, 0x334155, 0x38bdf8, () => {
       const newSpeed = Math.max(10, this.ballChain.getSpeed() - 10);
       this.ballChain.setSpeed(newSpeed);
-      this.debugSpeedLabel?.setText(`SPEED: ${newSpeed} px/s`);
+      this.debugSpeedLabel?.setText(`SPD: ${newSpeed}`);
     });
     this.debugContainer.add(speedDown.container);
 
-    const speedUp = this.createButton(-295, 8, 28, 26, '+10', 0x1e293b, 0x334155, 0x38bdf8, () => {
+    const speedUp = this.createButton(-470, 8, 26, 24, '+10', 0x1e293b, 0x334155, 0x38bdf8, () => {
       const newSpeed = this.ballChain.getSpeed() + 10;
       this.ballChain.setSpeed(newSpeed);
-      this.debugSpeedLabel?.setText(`SPEED: ${newSpeed} px/s`);
+      this.debugSpeedLabel?.setText(`SPD: ${newSpeed}`);
     });
     this.debugContainer.add(speedUp.container);
 
-    // --- Projectile Speed Tuning (Phase 4: 800, 950, 1050, 1200) ---
-    this.debugProjSpeedLabel = this.add.text(-240, 2, `PROJ: ${PROJECTILE_SPEED}`, {
-      fontFamily: 'monospace',
-      fontSize: '12px',
-      color: '#f8fafc',
-    });
-    this.debugContainer.add(this.debugProjSpeedLabel);
+    // --- Acceptance Test Launchers (Day-1 Requirement 11) ---
 
-    const projSpeeds = [950, 1100, 1250, 1400];
-    let projIdx = projSpeeds.indexOf(PROJECTILE_SPEED);
-    if (projIdx === -1) projIdx = 2;
-
-    const cycleProj = this.createButton(-130, 8, 75, 26, 'Cycle Vel', 0x1e293b, 0x334155, 0x38bdf8, () => {
-      projIdx = (projIdx + 1) % projSpeeds.length;
-      const nextSpd = projSpeeds[projIdx];
-      this.shooter.projectileSpeed = nextSpd;
-      this.debugProjSpeedLabel?.setText(`PROJ: ${nextSpd}`);
-      this.showTemporaryToast(`PROJ SPEED: ${nextSpd} px/s`);
-    });
-    this.debugContainer.add(cycleProj.container);
-
-    // --- Phase 3 Test Case Launcher ---
-    // Spawns: RED RED GREEN GREEN GREEN RED RED
-    const phase3Btn = this.createButton(
-      60,
+    // TEST B (2-Stage Cascade: Match 3 Green -> Pop -> 4 Red Meet -> Pop)
+    const testBBtn = this.createButton(
+      -360,
       8,
-      210,
+      140,
       26,
-      '🎯 Spawn Phase-3 Cascade Test',
+      '🎯 Test B (x2 Cascade)',
       0x1e293b,
       0x059669,
       0x34d399,
       () => this.spawnPhase3TestCase()
     );
-    this.debugContainer.add(phase3Btn.container);
+    this.debugContainer.add(testBBtn.container);
 
-    // --- Reset to Fixed Test Level ---
-    const resetFixedBtn = this.createButton(
-      240,
+    // TEST C (3-Stage Cascade: Match Red -> Blue -> Yellow)
+    const testCBtn = this.createButton(
+      -205,
       8,
-      125,
+      140,
+      26,
+      '🎯 Test C (x3 Cascade)',
+      0x1e293b,
+      0x0284c7,
+      0x38bdf8,
+      () => this.spawnThreeStageCascadeTest()
+    );
+    this.debugContainer.add(testCBtn.container);
+
+    // TEST D (Non-Match Shot -> Combo Reset)
+    const testDBtn = this.createButton(
+      -55,
+      8,
+      130,
+      26,
+      '🎯 Test D (Non-Match)',
+      0x1e293b,
+      0x475569,
+      0x94a3b8,
+      () => this.spawnNonMatchTest()
+    );
+    this.debugContainer.add(testDBtn.container);
+
+    // Reset to Fixed Level 1
+    const resetFixedBtn = this.createButton(
+      85,
+      8,
+      120,
       26,
       '↻ Fixed Level 1',
       0x1e293b,
@@ -604,12 +643,12 @@ export class GameScene extends Phaser.Scene {
     );
     this.debugContainer.add(resetFixedBtn.container);
 
-    // --- Toggle Rollback Physics (Phase 6) ---
+    // Toggle Rollback Physics (Optional Day-1 Experiment)
     const isRollbackActive = this.ballChain ? this.ballChain.enableRollbackPhysics : ENABLE_ROLLBACK_PHYSICS;
     const rollbackBtn = this.createButton(
-      410,
+      245,
       8,
-      175,
+      165,
       26,
       isRollbackActive ? 'Rollback: ON' : 'Rollback: OFF (Day 1)',
       0x1e293b,
@@ -629,6 +668,25 @@ export class GameScene extends Phaser.Scene {
     this.debugContainer.add(rollbackBtn.container);
   }
 
+  /**
+   * Updates real-time debug telemetry display (Day-1 Requirement 10).
+   */
+  public updateChainDebugTelemetry(
+    matchesCount: number,
+    finalCombo: number,
+    remainingBalls: number
+  ): void {
+    this.lastShotMatches = matchesCount;
+    if (this.chainBallsText) {
+      this.chainBallsText.setText(`BALLS: ${remainingBalls}`);
+    }
+    if (this.debugTelemetryText) {
+      this.debugTelemetryText.setText(
+        `[DEV] CHAIN BALLS: ${remainingBalls}  |  COMBO: x${this.scoreSystem.getCombo()}  |  LAST SHOT: ${matchesCount} MATCH(ES)`
+      );
+    }
+  }
+
   private toggleDebugPanel(): void {
     this.isDebugOpen = !this.isDebugOpen;
     this.debugContainer?.setVisible(this.isDebugOpen);
@@ -636,10 +694,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Spawns the exact Phase 3 example from the brief:
-   * [RED, RED, GREEN, GREEN, GREEN, RED, RED]
-   * Pre-loads the shooter with a GREEN orb so a single shot triggers:
-   * Match 3 green -> pop -> gap collapses -> 4 red meet -> secondary cascade match!
+   * Spawns Test Case B (2-Stage Cascade):
+   * Chain: [RED, RED, GREEN, GREEN, GREEN, RED, RED]
+   * Pre-loads the shooter with GREEN then RED.
+   * Player fires GREEN -> 3 GREEN match (x1) -> chain collapses -> 4 RED meet (x2) -> level cleared!
    */
   public spawnPhase3TestCase(): void {
     AudioSynth.playUiClick();
@@ -657,12 +715,70 @@ export class GameScene extends Phaser.Scene {
     ];
 
     this.ballChain.spawnInitialChain(testPattern);
+    this.shooter.setLoadedColors(BallColor.GREEN, BallColor.RED);
 
-    // Ensure player has GREEN to test the trigger
-    this.shooter.currentColor = BallColor.GREEN;
-    this.shooter.nextColor = BallColor.RED;
+    this.showTemporaryToast('TEST B LOADED: 🔴🔴 🟢🟢🟢 🔴🔴 (Shoot GREEN)');
+    this.updateChainDebugTelemetry(0, 1, testPattern.length);
+  }
 
-    this.showTemporaryToast('PHASE 3 TEST LOADED: 🔴🔴 🟢🟢🟢 🔴🔴');
+  /**
+   * Spawns Test Case C (3-Stage Cascade):
+   * Chain: [YELLOW, YELLOW, BLUE, BLUE, RED, RED, BLUE, BLUE, YELLOW, YELLOW]
+   * Pre-loads the shooter with RED then BLUE.
+   * Player fires RED between the two REDs:
+   * 1. 3 RED match (x1) -> pop!
+   * 2. 4 BLUE meet (x2) -> pop!
+   * 3. 4 YELLOW meet (x3) -> pop! Level cleared!
+   */
+  public spawnThreeStageCascadeTest(): void {
+    AudioSynth.playUiClick();
+    for (const p of this.projectiles) p.destroy();
+    this.projectiles = [];
+
+    const testPattern: BallColor[] = [
+      BallColor.YELLOW,
+      BallColor.YELLOW,
+      BallColor.BLUE,
+      BallColor.BLUE,
+      BallColor.RED,
+      BallColor.RED,
+      BallColor.BLUE,
+      BallColor.BLUE,
+      BallColor.YELLOW,
+      BallColor.YELLOW,
+    ];
+
+    this.ballChain.spawnInitialChain(testPattern);
+    this.shooter.setLoadedColors(BallColor.RED, BallColor.BLUE);
+
+    this.showTemporaryToast('TEST C LOADED: 🟡🟡 🔵🔵 🔴🔴 🔵🔵 🟡🟡 (Shoot RED into center)');
+    this.updateChainDebugTelemetry(0, 1, testPattern.length);
+  }
+
+  /**
+   * Spawns Test Case D (Non-Match Shot):
+   * Sets the shooter to YELLOW against an alternating chain of RED & BLUE.
+   * Firing guarantees no match, verifying combo reset to x1.
+   */
+  public spawnNonMatchTest(): void {
+    AudioSynth.playUiClick();
+    for (const p of this.projectiles) p.destroy();
+    this.projectiles = [];
+
+    const testPattern: BallColor[] = [
+      BallColor.RED,
+      BallColor.BLUE,
+      BallColor.RED,
+      BallColor.BLUE,
+      BallColor.RED,
+      BallColor.BLUE,
+    ];
+
+    this.ballChain.spawnInitialChain(testPattern);
+    this.shooter.setLoadedColors(BallColor.YELLOW, BallColor.YELLOW);
+
+    this.showTemporaryToast('TEST D LOADED: Alternating colors (Shoot YELLOW for non-match)');
+    this.updateChainDebugTelemetry(0, 1, testPattern.length);
   }
 
   /**

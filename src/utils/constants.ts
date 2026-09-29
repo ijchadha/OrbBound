@@ -14,7 +14,7 @@ export const MATCH_MIN = 3;
 export const INITIAL_BALL_COUNT = 25;
 export const INSERTION_SETTLE_MS = 120; // Milliseconds for smooth squeeze-in animation
 
-export const ENABLE_ROLLBACK_PHYSICS = true;
+export const ENABLE_ROLLBACK_PHYSICS = false;
 
 export const SHOOTER_Y = 640;
 export const SHOOTER_X = 640;
