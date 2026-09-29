@@ -86,12 +86,13 @@ export class GameScene extends Phaser.Scene {
     this.renderEndpointMarker();
     this.setupHUD();
 
-    // Initialize ball chain with deterministic matching and cascade callbacks
+    // Initialize ball chain with deterministic matching and genuine cascade callbacks
     this.ballChain = new BallChain(this, this.pathSampler, {
       onReachedEnd: () => this.handleChainReachedEnd(),
       onMatch: (color, count, x, y, comboMultiplier) =>
         this.handleMatch(color, count, x, y, comboMultiplier),
-      onWaveCleared: () => this.handleWaveCleared(),
+      // Genuine gameplay level clear: balls removed by player matches
+      onWaveCleared: () => this.handleWaveCleared(true),
       onShotResolved: (matchesCount, finalCombo, remainingBalls) =>
         this.updateChainDebugTelemetry(matchesCount, finalCombo, remainingBalls),
     });
@@ -103,13 +104,29 @@ export class GameScene extends Phaser.Scene {
 
     // Aiming tracking (only when not paused/ended/cleared)
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (this.isPaused || this.isGameEnded || this.gameOverBanner || this.waveClearBanner || this.levelSelectModal) return;
+      if (
+        this.isPaused ||
+        this.isGameEnded ||
+        this.gameOverBanner ||
+        this.waveClearBanner ||
+        this.levelSelectModal
+      ) {
+        return;
+      }
       this.shooter.updateAim(pointer.x, pointer.y);
     });
 
     // Shooting on Left-Click, Swapping colors on Right-Click
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.isPaused || this.isGameEnded || this.gameOverBanner || this.waveClearBanner || this.levelSelectModal) return;
+      if (
+        this.isPaused ||
+        this.isGameEnded ||
+        this.gameOverBanner ||
+        this.waveClearBanner ||
+        this.levelSelectModal
+      ) {
+        return;
+      }
 
       // Don't fire if clicking inside top HUD bar area (y < 85) or debug panel (y > 640 when open)
       if (pointer.y < 85) return;
@@ -127,7 +144,15 @@ export class GameScene extends Phaser.Scene {
 
     // Keyboard Shortcuts
     this.input.keyboard?.on('keydown-SPACE', () => {
-      if (this.isPaused || this.isGameEnded || this.gameOverBanner || this.waveClearBanner || this.levelSelectModal) return;
+      if (
+        this.isPaused ||
+        this.isGameEnded ||
+        this.gameOverBanner ||
+        this.waveClearBanner ||
+        this.levelSelectModal
+      ) {
+        return;
+      }
       this.shooter.swapColors();
     });
 
@@ -145,7 +170,7 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-L', () => this.toggleLevelSelectModal());
 
     // Load initial level definition
-    this.loadLevel(this.levelManager.getCurrentLevelId());
+    this.loadLevel(this.levelManager.getCurrentLevelId(), false, true);
   }
 
   public override update(time: number, delta: number): void {
@@ -233,14 +258,32 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Day 2 Level Loading:
+   * Level Loading:
    * Consumes LevelDefinition data to configure track, speed, and deterministic ball sequence.
+   *
+   * @param levelId The target level id (1 to 5).
+   * @param isRestart True if restarting current level.
+   * @param isDevOverride True ONLY for developer debug tools to test locked levels without mutating save.
+   * @returns True if level was successfully loaded, false if level is locked.
    */
-  public loadLevel(levelId: number, isRestart: boolean = false): void {
+  public loadLevel(
+    levelId: number,
+    isRestart: boolean = false,
+    isDevOverride: boolean = false
+  ): boolean {
     const level = this.levelManager.getLevel(levelId);
-    if (!level) return;
+    if (!level) return false;
 
-    this.levelManager.setCurrentLevelId(levelId);
+    // Requirement 3: Enforce unlock status on normal production navigation
+    if (isDevOverride) {
+      this.levelManager.devForceSetLevelId(levelId);
+    } else {
+      const allowed = this.levelManager.setCurrentLevelId(levelId);
+      if (!allowed) {
+        this.showTemporaryToast(`Level ${levelId} is locked.`);
+        return false;
+      }
+    }
 
     // 1. Clean up active projectiles
     for (const proj of this.projectiles) {
@@ -304,6 +347,8 @@ export class GameScene extends Phaser.Scene {
         ? `LEVEL ${level.id} RESTARTED: ${level.name.toUpperCase()}`
         : `LEVEL ${level.id}: ${level.name.toUpperCase()}`
     );
+
+    return true;
   }
 
   /**
@@ -387,8 +432,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Draws an ancient mystical stone temple floor with flagstone masonry,
-   * glowing dais for the shooter, and carved border framing.
+   * Draws the ancient stone temple floor with flagstone masonry and dais.
    */
   private renderBackground(): void {
     this.backgroundGraphics = this.add.graphics();
@@ -402,7 +446,7 @@ export class GameScene extends Phaser.Scene {
     const tileSize = 80;
     for (let x = 0; x < GAME_WIDTH; x += tileSize) {
       for (let y = 0; y < GAME_HEIGHT; y += tileSize) {
-        const isAlt = ((x / tileSize) + (y / tileSize)) % 2 === 0;
+        const isAlt = (x / tileSize + y / tileSize) % 2 === 0;
 
         // Subtle tile surface variation
         this.backgroundGraphics.fillStyle(isAlt ? 0x090f1d : 0x0c1322, 1);
@@ -434,8 +478,10 @@ export class GameScene extends Phaser.Scene {
       const cos = Math.cos(a);
       const sin = Math.sin(a);
       this.backgroundGraphics.lineBetween(
-        640 + cos * 75, 640 + sin * 75,
-        640 + cos * 90, 640 + sin * 90
+        640 + cos * 75,
+        640 + sin * 75,
+        640 + cos * 90,
+        640 + sin * 90
       );
     }
 
@@ -817,8 +863,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Day 2 Designer Debug & Level Controls (Requirement 10).
-   * Level progression buttons, instant cascade scenarios, chain speed, and live telemetry.
+   * Designer Debug Panel (Requirement 10 & 3):
+   * Developer navigation and testing controls.
    */
   private setupDebugPanel(): void {
     this.debugContainer = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT - 45);
@@ -874,7 +920,7 @@ export class GameScene extends Phaser.Scene {
     });
     this.debugContainer.add(speedUp.container);
 
-    // --- Level Progression Controls ---
+    // --- Level Navigation Controls (Developer Tool Override ONLY) ---
     const prevLvlBtn = this.createButton(
       -400,
       8,
@@ -887,7 +933,8 @@ export class GameScene extends Phaser.Scene {
       () => {
         const prevId = this.levelManager.getPrevLevelId();
         if (prevId) {
-          this.loadLevel(prevId);
+          // Dev tool bypass: loads level for testing without mutating unlock state
+          this.loadLevel(prevId, false, true);
         } else {
           this.showTemporaryToast('Already at Level 1');
         }
@@ -907,7 +954,8 @@ export class GameScene extends Phaser.Scene {
       () => {
         const nextId = this.levelManager.getNextLevelId();
         if (nextId) {
-          this.loadLevel(nextId);
+          // Dev tool bypass: loads level for testing without mutating unlock state
+          this.loadLevel(nextId, false, true);
         } else {
           this.showTemporaryToast('Already at Level 5');
         }
@@ -915,7 +963,7 @@ export class GameScene extends Phaser.Scene {
     );
     this.debugContainer.add(nextLvlBtn.container);
 
-    // Clear Chain Button (Instantly tests Level Cleared flow)
+    // Clear Chain Button (Developer visual inspection ONLY; does NOT trigger production level complete)
     const clearChainBtn = this.createButton(
       -205,
       8,
@@ -928,7 +976,8 @@ export class GameScene extends Phaser.Scene {
       () => {
         AudioSynth.playUiClick();
         this.ballChain.clearBalls();
-        this.handleWaveCleared();
+        // False = Not genuine clear, does not advance progression or campaign score
+        this.handleWaveCleared(false);
       }
     );
     this.debugContainer.add(clearChainBtn.container);
@@ -1487,7 +1536,7 @@ export class GameScene extends Phaser.Scene {
     AudioSynth.playUiClick();
     this.scoreSystem.resetAll();
     this.levelManager.resetProgression();
-    this.loadLevel(1);
+    this.loadLevel(1, false, true);
     this.showTemporaryToast('NEW CAMPAIGN STARTED - LEVEL 1');
   }
 
@@ -1575,10 +1624,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Day 2 Level Cleared Flow (Requirement 5 & 7):
-   * Records level score, unlocks subsequent level, and offers Next Level / Campaign Complete actions.
+   * Level Cleared Flow (Requirement 1, 2, 4, 5):
+   * Only genuine gameplay clears call LevelManager.completeLevel().
+   * Debug Clear Chain sets isGenuineClear = false and does NOT complete the level or advance progression.
    */
-  private handleWaveCleared(): void {
+  private handleWaveCleared(isGenuineClear: boolean = false): void {
     if (this.waveClearBanner || this.isGameEnded) return;
 
     for (const proj of this.projectiles) {
@@ -1590,11 +1640,14 @@ export class GameScene extends Phaser.Scene {
     const levelScore = this.scoreSystem.getScore();
     const bestCombo = this.scoreSystem.getMaxCombo();
 
-    // Persist progression & accumulate total campaign score
-    this.levelManager.completeLevel(currentLevel.id, levelScore);
-    const totalCampaignScore = this.levelManager.getTotalCampaignScore();
-    this.scoreSystem.setTotalCampaignScore(totalCampaignScore);
+    // Requirement 1 & 4: Only genuine gameplay clears persist progression and score
+    if (isGenuineClear) {
+      this.levelManager.completeLevel(currentLevel.id, levelScore);
+      const totalCampaignScore = this.levelManager.getTotalCampaignScore();
+      this.scoreSystem.setTotalCampaignScore(totalCampaignScore);
+    }
 
+    const totalCampaignScore = this.levelManager.getTotalCampaignScore();
     const hasNext = this.levelManager.hasNextLevel();
     const nextLevelId = this.levelManager.getNextLevelId();
 
@@ -1652,7 +1705,11 @@ export class GameScene extends Phaser.Scene {
         0x059669,
         0x34d399,
         () => {
-          this.loadLevel(nextLevelId);
+          // Requirement 3: Normal next level checks unlock status via loadLevel
+          const success = this.loadLevel(nextLevelId);
+          if (!success) {
+            this.showTemporaryToast(`Level ${nextLevelId} is not unlocked.`);
+          }
         }
       );
       this.waveClearBanner.add(nextBtn.container);
@@ -1685,7 +1742,7 @@ export class GameScene extends Phaser.Scene {
         0x059669,
         0x34d399,
         () => {
-          this.loadLevel(1);
+          this.loadLevel(1, false, true);
         }
       );
       this.waveClearBanner.add(replayBtn.container);

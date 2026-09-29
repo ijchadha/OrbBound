@@ -6,17 +6,23 @@ const STORAGE_KEY = 'orbbound_campaign_save_v2';
 interface ProgressionData {
   highestUnlockedLevel: number;
   totalCampaignScore: number;
+  completedLevels: number[];
 }
 
 /**
  * LevelManager governs level loading, progression tracking, and localStorage persistence.
  * Completely decoupled from rendering and physics.
+ *
+ * Campaign Score Policy (Day 2 Option B):
+ * - A level's completion score is added to the total campaign score on its FIRST completion only.
+ * - Replaying a previously cleared level does not accumulate score again, preserving campaign integrity.
  */
 export class LevelManager {
   private levels: LevelDefinition[];
   private currentLevelId: number = 1;
   private highestUnlockedLevel: number = 1;
   private totalCampaignScore: number = 0;
+  private completedLevels: number[] = [];
 
   constructor(definitions: LevelDefinition[] = LEVEL_DEFINITIONS) {
     this.levels = definitions;
@@ -40,6 +46,9 @@ export class LevelManager {
     return this.currentLevelId;
   }
 
+  /**
+   * Production level navigation: only permits navigating to already unlocked levels.
+   */
   public setCurrentLevelId(id: number): boolean {
     if (this.isLevelUnlocked(id)) {
       this.currentLevelId = id;
@@ -48,7 +57,10 @@ export class LevelManager {
     return false;
   }
 
-  public forceSetLevelId(id: number): void {
+  /**
+   * Developer override: allows testing levels directly without modifying unlock state.
+   */
+  public devForceSetLevelId(id: number): void {
     if (this.levels.some((l) => l.id === id)) {
       this.currentLevelId = id;
     }
@@ -56,6 +68,10 @@ export class LevelManager {
 
   public isLevelUnlocked(id: number): boolean {
     return id <= this.highestUnlockedLevel;
+  }
+
+  public isLevelCompleted(id: number): boolean {
+    return this.completedLevels.includes(id);
   }
 
   public getHighestUnlockedLevel(): number {
@@ -66,15 +82,26 @@ export class LevelManager {
     return this.totalCampaignScore;
   }
 
+  public getCompletedLevels(): readonly number[] {
+    return this.completedLevels;
+  }
+
   /**
-   * Called when a level is cleared.
-   * Records the level score to campaign score and unlocks the subsequent level if applicable.
-   * Returns true if a new level was unlocked.
+   * Called ONLY when a level is genuinely cleared through normal gameplay.
+   * - Records score to total campaign score on first completion (Option B).
+   * - Unlocks the next level if id < 5.
+   * - Never unlocks level 6.
+   * - Persists state to localStorage.
    */
   public completeLevel(clearedId: number, levelScore: number): boolean {
-    this.totalCampaignScore += Math.max(0, levelScore);
+    const isFirstTime = !this.completedLevels.includes(clearedId);
+    if (isFirstTime) {
+      this.completedLevels.push(clearedId);
+      this.totalCampaignScore += Math.max(0, levelScore);
+    }
 
     let newlyUnlocked = false;
+    // Mini-campaign finale is Level 5; do not attempt to unlock Level 6
     if (clearedId >= this.highestUnlockedLevel && clearedId < this.levels.length) {
       this.highestUnlockedLevel = clearedId + 1;
       newlyUnlocked = true;
@@ -109,6 +136,7 @@ export class LevelManager {
     this.currentLevelId = 1;
     this.highestUnlockedLevel = 1;
     this.totalCampaignScore = 0;
+    this.completedLevels = [];
     this.saveProgression();
   }
 
@@ -123,11 +151,17 @@ export class LevelManager {
         if (typeof parsed.totalCampaignScore === 'number') {
           this.totalCampaignScore = Math.max(0, parsed.totalCampaignScore);
         }
+        if (Array.isArray(parsed.completedLevels)) {
+          this.completedLevels = parsed.completedLevels.filter(
+            (id) => typeof id === 'number' && id >= 1 && id <= this.levels.length
+          );
+        }
       }
     } catch {
       // Graceful fallback if localStorage is disabled or restricted
       this.highestUnlockedLevel = 1;
       this.totalCampaignScore = 0;
+      this.completedLevels = [];
     }
   }
 
@@ -136,6 +170,7 @@ export class LevelManager {
       const data: ProgressionData = {
         highestUnlockedLevel: this.highestUnlockedLevel,
         totalCampaignScore: this.totalCampaignScore,
+        completedLevels: this.completedLevels,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch {
