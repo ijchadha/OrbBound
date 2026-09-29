@@ -76,7 +76,7 @@ export class BallChain {
    * Spawns initial chain with evenly spaced balls.
    */
   public spawnInitialChain(source: BallColor[] | number = FIXED_LEVEL_SEQUENCE): void {
-    this.destroy();
+    this.clearBalls();
     this.isAtEnd = false;
     this.currentCascadeMultiplier = 1;
 
@@ -613,6 +613,10 @@ export class BallChain {
     this.speed = Math.max(10, speed);
   }
 
+  public setPathSampler(pathSampler: PathSampler): void {
+    this.pathSampler = pathSampler;
+  }
+
   public getHeadDistance(): number {
     return this.balls.length > 0 ? this.balls[0].distanceAlongPath : 0;
   }
@@ -621,11 +625,29 @@ export class BallChain {
     return this.isAtEnd;
   }
 
-  public destroy(): void {
-    this.magneticFxGraphics.destroy();
+  /**
+   * Cleans up all active balls and dynamic effects without destroying persistent graphics objects.
+   * Used for level restarts, wave respawns, and debug test pattern loading.
+   */
+  public clearBalls(): void {
+    if (this.magneticFxGraphics && this.magneticFxGraphics.scene) {
+      this.magneticFxGraphics.clear();
+    }
     for (const ball of this.balls) {
       ball.destroy();
     }
     this.balls = [];
+    this.isAtEnd = false;
+    this.currentCascadeMultiplier = 1;
+  }
+
+  /**
+   * Permanently tears down the BallChain and releases allocated Phaser display objects.
+   */
+  public destroy(): void {
+    this.clearBalls();
+    if (this.magneticFxGraphics) {
+      this.magneticFxGraphics.destroy();
+    }
   }
 }

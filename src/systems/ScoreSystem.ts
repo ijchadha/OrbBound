@@ -1,29 +1,32 @@
 export interface ScoreListener {
-  (score: number, level: number, combo: number): void;
+  (score: number, level: number, combo: number, totalScore?: number): void;
 }
 
 /**
  * ScoreSystem encapsulates game scoring, cascade combo multiplier tracking, and level state.
  *
- * Phase 7 Scoring Rules:
+ * Scoring Rules:
  * - Base points: 10 per ball (3 balls = 30, 4 balls = 40, 5 balls = 50)
  * - Combo Multiplier: Represents consecutive chain-reaction matches in ONE shot resolution
  *   (1st match: x1, 2nd match via collapse: x2, 3rd match: x3...)
+ * - Points = matchedBallCount * 10 * cascadeMultiplier
  */
 export class ScoreSystem {
-  private score: number = 0;
+  private score: number = 0; // Current level score
+  private totalCampaignScore: number = 0; // Accumulated campaign score
   private level: number = 1;
   private combo: number = 1;
   private maxCombo: number = 1;
   private listeners: ScoreListener[] = [];
 
-  constructor(initialLevel: number = 1) {
+  constructor(initialLevel: number = 1, initialCampaignScore: number = 0) {
     this.level = initialLevel;
+    this.totalCampaignScore = initialCampaignScore;
   }
 
   public subscribe(listener: ScoreListener): () => void {
     this.listeners.push(listener);
-    listener(this.score, this.level, this.combo);
+    listener(this.score, this.level, this.combo, this.totalCampaignScore);
     return () => {
       this.listeners = this.listeners.filter((l) => l !== listener);
     };
@@ -31,12 +34,12 @@ export class ScoreSystem {
 
   private notify(): void {
     for (const listener of this.listeners) {
-      listener(this.score, this.level, this.combo);
+      listener(this.score, this.level, this.combo, this.totalCampaignScore);
     }
   }
 
   /**
-   * Records a match event using Phase 7 rules.
+   * Records a match event.
    * Returns the points earned from this match event.
    */
   public recordMatch(ballCount: number, cascadeMultiplier: number = 1): number {
@@ -67,6 +70,20 @@ export class ScoreSystem {
     return this.score;
   }
 
+  public getTotalCampaignScore(): number {
+    return this.totalCampaignScore;
+  }
+
+  public setTotalCampaignScore(total: number): void {
+    this.totalCampaignScore = Math.max(0, total);
+    this.notify();
+  }
+
+  public addCompletedLevelScore(levelScore: number): void {
+    this.totalCampaignScore += Math.max(0, levelScore);
+    this.notify();
+  }
+
   public getLevel(): number {
     return this.level;
   }
@@ -81,14 +98,20 @@ export class ScoreSystem {
 
   public resetAll(): void {
     this.score = 0;
+    this.totalCampaignScore = 0;
     this.level = 1;
     this.combo = 1;
     this.maxCombo = 1;
     this.notify();
   }
 
-  public resetForCurrentLevel(): void {
+  public resetForCurrentLevel(level?: number): void {
+    this.score = 0;
+    if (level !== undefined) {
+      this.level = level;
+    }
     this.combo = 1;
+    this.maxCombo = 1;
     this.notify();
   }
 }
